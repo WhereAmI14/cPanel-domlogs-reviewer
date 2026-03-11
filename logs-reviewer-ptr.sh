@@ -665,26 +665,116 @@ resolve_ptr_host() {
   printf '%s' "$host"
 }
 
+extract_json_string_field() {
+  local json="$1"
+  local field="$2"
+
+  printf '%s\n' "$json" | sed -n "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1
+}
+
+lookup_ipinfo_json() {
+  local ip="$1"
+  local url="https://ipinfo.io/${ip}/json"
+
+  if [[ -n "${IPINFO_TOKEN:-}" ]]; then
+    url+="?token=${IPINFO_TOKEN}"
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${IPINFO_TIMEOUT_SECS}s" curl -fsS "$url" 2>/dev/null || true
+  else
+    curl -fsS "$url" 2>/dev/null || true
+  fi
+}
+
+lookup_ipwhois_json() {
+  local ip="$1"
+  local url="https://ipwho.is/${ip}"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${IPINFO_TIMEOUT_SECS}s" curl -fsS "$url" 2>/dev/null || true
+  else
+    curl -fsS "$url" 2>/dev/null || true
+  fi
+}
+
+lookup_ip_org_from_whois() {
+  local ip="$1"
+
+  if ! command -v whois >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${IPINFO_TIMEOUT_SECS}s" whois "$ip" 2>/dev/null | awk -F': *' '
+      BEGIN { IGNORECASE=1 }
+      /^(orgname|org-name|org-name-ext|owner|organization|org|descr|netname):/ {
+        if ($2 != "" && $2 !~ /abuse|maintainer|role/i) {
+          print $2
+          exit
+        }
+      }
+    '
+  else
+    whois "$ip" 2>/dev/null | awk -F': *' '
+      BEGIN { IGNORECASE=1 }
+      /^(orgname|org-name|org-name-ext|owner|organization|org|descr|netname):/ {
+        if ($2 != "" && $2 !~ /abuse|maintainer|role/i) {
+          print $2
+          exit
+        }
+      }
+    '
+  fi
+}
+
 resolve_ip_org() {
   local ip="$1"
-  local response="" org=""
+  local response="" org="" isp=""
 
   if [[ -n "${ORG_CACHE[$ip]+x}" ]]; then
     printf '%s' "${ORG_CACHE[$ip]}"
     return 0
   fi
 
-  if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-    if command -v timeout >/dev/null 2>&1; then
-      response=$(timeout "${IPINFO_TIMEOUT_SECS}s" curl -fsS "https://ipinfo.io/${ip}/json" 2>/dev/null || true)
-    else
-      response=$(curl -fsS "https://ipinfo.io/${ip}/json" 2>/dev/null || true)
-    fi
+  response=$(lookup_ipinfo_json "$ip")
 
-    if [[ -n "$response" ]]; then
+  if [[ -n "$response" ]]; then
+    if command -v jq >/dev/null 2>&1; then
       org=$(printf '%s' "$response" | jq -r '.org // empty' 2>/dev/null || true)
-      org="${org#AS[0-9]* }"
+    else
+      org=$(extract_json_string_field "$response" "org")
     fi
+  fi
+
+  org="${org#AS[0-9]* }"
+
+  if [[ -z "$org" || "$org" == "null" ]]; then
+    response=$(lookup_ipwhois_json "$ip")
+    if [[ -n "$response" ]]; then
+      if command -v jq >/dev/null 2>&1; then
+        org=$(printf '%s' "$response" | jq -r '.connection.org // empty' 2>/dev/null || true)
+        isp=$(printf '%s' "$response" | jq -r '.connection.isp // empty' 2>/dev/null || true)
+      else
+        org=$(extract_json_string_field "$response" "org")
+        isp=$(extract_json_string_field "$response" "isp")
+      fi
+      if [[ -z "$org" || "$org" == "null" ]]; then
+        org="$isp"
+      fi
+    fi
+  fi
+
+  if [[ -z "$org" || "$org" == "null" ]]; then
+    org=$(lookup_ip_org_from_whois "$ip")
   fi
 
   if [[ -z "$org" || "$org" == "null" ]]; then
