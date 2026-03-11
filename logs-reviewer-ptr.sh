@@ -28,6 +28,7 @@ MAIN_INCLUDE_ARCHIVES=0
 ACTIVE_OLDEST_EPOCH=0
 COMBINED_OLDEST_EPOCH=0
 DNS_TIMEOUT_SECS=2
+IPINFO_TIMEOUT_SECS=3
 
 # Only emit ANSI colors when writing to a terminal (and not explicitly disabled).
 USE_COLOR=0
@@ -48,6 +49,7 @@ LOG_USER_INPUT=""
 declare -a ARCHIVE_LOGS=()
 declare -a ARCHIVE_PERIODS=()
 declare -A PTR_CACHE=()
+declare -A ORG_CACHE=()
 
 usage() {
   cat <<'EOF'
@@ -191,6 +193,33 @@ print_bold_line() {
   else
     printf "%s\n" "$1"
   fi
+}
+
+print_empty_summary() {
+  echo "  (none)"
+}
+
+print_counted_table_from_file() {
+  local source_file="$1"
+  local limit="$2"
+  local value_label="$3"
+  local max_len="${4:-0}"
+
+  if [[ ! -s "$source_file" ]]; then
+    print_empty_summary
+    return 0
+  fi
+
+  print_bold_line "$(printf "%8s  %s" "Count" "$value_label")"
+  awk -F'\t' -v limit="$limit" -v max_len="$max_len" '
+    NR <= limit {
+      value = $2
+      if (max_len > 3 && length(value) > max_len) {
+        value = substr(value, 1, max_len - 3) "..."
+      }
+      printf "%8d  %s\n", $1, value
+    }
+  ' "$source_file"
 }
 
 parse_timeframe_value() {
@@ -636,6 +665,36 @@ resolve_ptr_host() {
   printf '%s' "$host"
 }
 
+resolve_ip_org() {
+  local ip="$1"
+  local response="" org=""
+
+  if [[ -n "${ORG_CACHE[$ip]+x}" ]]; then
+    printf '%s' "${ORG_CACHE[$ip]}"
+    return 0
+  fi
+
+  if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      response=$(timeout "${IPINFO_TIMEOUT_SECS}s" curl -fsS "https://ipinfo.io/${ip}/json" 2>/dev/null || true)
+    else
+      response=$(curl -fsS "https://ipinfo.io/${ip}/json" 2>/dev/null || true)
+    fi
+
+    if [[ -n "$response" ]]; then
+      org=$(printf '%s' "$response" | jq -r '.org // empty' 2>/dev/null || true)
+      org="${org#AS[0-9]* }"
+    fi
+  fi
+
+  if [[ -z "$org" || "$org" == "null" ]]; then
+    org="-"
+  fi
+
+  ORG_CACHE["$ip"]="$org"
+  printf '%s' "$org"
+}
+
 bucket_ptr_host() {
   local host="$1"
 
@@ -734,18 +793,19 @@ group_ptr_host_family() {
 print_top_ips_with_hosts() {
   local source_file="$1"
   local limit="${2:-10}"
-  local count ip host tmpf
+  local count ip host org tmpf
 
   tmpf=$(mktemp)
   cleanup_files+=("$tmpf")
   awk '{print $1}' "$source_file" | sort | uniq -c | sort -rh | awk -v limit="$limit" 'NR<=limit {print $1, $2}' > "$tmpf"
 
-  print_bold_line "$(printf "%8s  %-39s %s" "Count" "IP" "PTR Host")"
+  print_bold_line "$(printf "%8s  %-39s %-42s %s" "Count" "IP" "PTR Host" "Org / ISP")"
 
   while read -r count ip; do
     [[ -n "${ip:-}" ]] || continue
     host=$(resolve_ptr_host "$ip")
-    printf "%8d  %-39s %s\n" "$count" "$ip" "$host"
+    org=$(resolve_ip_org "$ip")
+    printf "%8d  %-39s %-42s %s\n" "$count" "$ip" "$host" "$org"
   done < "$tmpf"
 }
 
@@ -808,18 +868,24 @@ print_top_ptr_providers() {
 print_error_ip_status_pairs_with_hosts() {
   local source_file="$1"
   local limit="${2:-10}"
-  local count ip status host tmpf
+  local count ip status host org tmpf
 
   tmpf=$(mktemp)
   cleanup_files+=("$tmpf")
   awk '$9 ~ /^[45]/ {print $1, $9}' "$source_file" | sort | uniq -c | sort -rh | awk -v limit="$limit" 'NR<=limit {print $1, $2, $3}' > "$tmpf"
 
-  print_bold_line "$(printf "%8s  %-39s %-40s %s" "Count" "IP" "PTR Host" "Status")"
+  if [[ ! -s "$tmpf" ]]; then
+    print_empty_summary
+    return 0
+  fi
+
+  print_bold_line "$(printf "%8s  %-39s %-40s %-22s %s" "Count" "IP" "PTR Host" "Org / ISP" "Status")"
 
   while read -r count ip status; do
     [[ -n "${status:-}" ]] || continue
     host=$(resolve_ptr_host "$ip")
-    printf "%8d  %-39s %-40s %s\n" "$count" "$ip" "$host" "$status"
+    org=$(resolve_ip_org "$ip")
+    printf "%8d  %-39s %-40s %-22s %s\n" "$count" "$ip" "$host" "$org" "$status"
   done < "$tmpf"
 }
 # The main insights function prints various summaries and top lists based on the filtered log data. It handles the case where no data is available for the selected timeframe and includes bot detection based on user agent strings.
@@ -827,6 +893,7 @@ print_insights_from_file() {
   local source_file="$1"
   local heading="$2"
   local total_requests unique_ips total_bytes avg_bytes bot_hits bot_pct
+  local bots_tmp referrers_tmp top4xx_tmp top5xx_tmp
 
   if [[ ! -s "$source_file" ]]; then
     echo
@@ -872,23 +939,33 @@ print_insights_from_file() {
 
   bot_hits=$(awk -F'"' '$6 ~ /bot|crawl|spider/i {c++} END {print c+0}' "$source_file")
   bot_pct=$(awk -v b="$bot_hits" -v t="$total_requests" 'BEGIN {if (t>0) printf "%.2f", (b*100/t); else print "0.00"}')
+  bots_tmp=$(mktemp)
+  referrers_tmp=$(mktemp)
+  top4xx_tmp=$(mktemp)
+  top5xx_tmp=$(mktemp)
+  cleanup_files+=("$bots_tmp" "$referrers_tmp" "$top4xx_tmp" "$top5xx_tmp")
+
+  awk -F'"' '$6 ~ /bot|crawl|spider/i {print $6}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10 {sub(/^[[:space:]]+/, "", $0); count=$1; $1=""; sub(/^[[:space:]]+/, "", $0); printf "%s\t%s\n", count, $0}' > "$bots_tmp"
+  awk -F'"' '{print $4}' "$source_file" | grep -v '^-$' | sort | uniq -c | sort -rh | awk 'NR<=10 {sub(/^[[:space:]]+/, "", $0); count=$1; $1=""; sub(/^[[:space:]]+/, "", $0); printf "%s\t%s\n", count, $0}' > "$referrers_tmp"
+  awk '$9 ~ /^4/ {print $7}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10 {sub(/^[[:space:]]+/, "", $0); count=$1; $1=""; sub(/^[[:space:]]+/, "", $0); printf "%s\t%s\n", count, $0}' > "$top4xx_tmp"
+  awk '$9 ~ /^5/ {print $7}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10 {sub(/^[[:space:]]+/, "", $0); count=$1; $1=""; sub(/^[[:space:]]+/, "", $0); printf "%s\t%s\n", count, $0}' > "$top5xx_tmp"
 
   echo
   echo "${GREEN}Bots${DEF}"
   echo "Bot requests: $bot_hits ($bot_pct%)"
-  awk -F'"' '$6 ~ /bot|crawl|spider/i {print $6}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10'
+  print_counted_table_from_file "$bots_tmp" 10 "User Agent" 110
 
   echo
   echo "${GREEN}Top Referrers${DEF}"
-  awk -F'"' '{print $4}' "$source_file" | grep -v '^-$' | sort | uniq -c | sort -rh | awk 'NR<=10'
+  print_counted_table_from_file "$referrers_tmp" 10 "Referrer" 110
 
   echo
   echo "${GREEN}Top 4xx URLs${DEF}"
-  awk '$9 ~ /^4/ {print $7}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10'
+  print_counted_table_from_file "$top4xx_tmp" 10 "URL" 110
 
   echo
   echo "${GREEN}Top 5xx URLs${DEF}"
-  awk '$9 ~ /^5/ {print $7}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10'
+  print_counted_table_from_file "$top5xx_tmp" 10 "URL" 110
 
   echo
   echo "${GREEN}Top Error IP/Status Pairs${DEF}"
