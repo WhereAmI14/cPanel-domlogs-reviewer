@@ -14,7 +14,9 @@ GREEN=$'\033[32;1m'
 YELLOW=$'\033[33;1m'
 BLUE=$'\033[34;1m'
 MAGENTA=$'\033[35;1m'
+
 DEF=$'\033[0m'
+BOLD=$'\033[1m'
 
 # The script is designed to be interactive but also supports non-interactive use with explicit options.
 ME=$(whoami)
@@ -181,6 +183,14 @@ colorize_status_last_field() {
       print
     }
   '
+}
+
+print_bold_line() {
+  if [[ "$USE_COLOR" -eq 1 ]]; then
+    printf "%s%s%s\n" "$BOLD" "$1" "$DEF"
+  else
+    printf "%s\n" "$1"
+  fi
 }
 
 parse_timeframe_value() {
@@ -730,7 +740,7 @@ print_top_ips_with_hosts() {
   cleanup_files+=("$tmpf")
   awk '{print $1}' "$source_file" | sort | uniq -c | sort -rh | awk -v limit="$limit" 'NR<=limit {print $1, $2}' > "$tmpf"
 
-  printf "%8s  %-39s %s\n" "Count" "IP" "PTR Host"
+  print_bold_line "$(printf "%8s  %-39s %s" "Count" "IP" "PTR Host")"
 
   while read -r count ip; do
     [[ -n "${ip:-}" ]] || continue
@@ -777,7 +787,7 @@ print_top_ptr_groups() {
     }
   ' "$group_rows_tmp" | sort -t $'\t' -k1,1nr -k2,2nr -k3,3 > "$summary_tmp"
 
-  printf "%8s  %9s  %s\n" "Requests" "Unique IPs" "$group_label"
+  print_bold_line "$(printf "%8s  %9s  %s" "Requests" "Unique IPs" "$group_label")"
   awk -F'\t' -v limit="$limit" 'NR<=limit {printf "%8d  %9d  %s\n", $1, $2, $3}' "$summary_tmp"
 }
 
@@ -804,7 +814,7 @@ print_error_ip_status_pairs_with_hosts() {
   cleanup_files+=("$tmpf")
   awk '$9 ~ /^[45]/ {print $1, $9}' "$source_file" | sort | uniq -c | sort -rh | awk -v limit="$limit" 'NR<=limit {print $1, $2, $3}' > "$tmpf"
 
-  printf "%8s  %-39s %-40s %s\n" "Count" "IP" "PTR Host" "Status"
+  print_bold_line "$(printf "%8s  %-39s %-40s %s" "Count" "IP" "PTR Host" "Status")"
 
   while read -r count ip status; do
     [[ -n "${status:-}" ]] || continue
@@ -812,7 +822,7 @@ print_error_ip_status_pairs_with_hosts() {
     printf "%8d  %-39s %-40s %s\n" "$count" "$ip" "$host" "$status"
   done < "$tmpf"
 }
-
+# The main insights function prints various summaries and top lists based on the filtered log data. It handles the case where no data is available for the selected timeframe and includes bot detection based on user agent strings.
 print_insights_from_file() {
   local source_file="$1"
   local heading="$2"
@@ -1131,16 +1141,16 @@ for base in "${BASE_LOGS[@]}"; do
   echo "${RED}Domain: $domain${DEF}"
   echo "Requests: $total | Unique IPs: $unique_ips"
 
-  echo "Top IPs"
+  echo "${GREEN}Top IPs${DEF}"
   print_top_ips_with_hosts "$domain_tmp" 10
 
-  echo "Top PTR Hosts"
+  echo "${GREEN}Top PTR Hosts${DEF}"
   print_top_ptr_hosts "$domain_tmp" 10
 
-  echo "Top PTR Providers"
+  echo "${GREEN}Top PTR Providers${DEF}"
   print_top_ptr_providers "$domain_tmp" 10
 
-  echo "Status codes"
+  echo "${GREEN}Status codes${DEF}"
   print_status_with_percent "$domain_tmp" "$total"
   echo
 
