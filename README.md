@@ -53,3 +53,104 @@ Missing enrichment sources will display `-` rather than failing.
 
 ## Usage
 ```bash
+bash logs-reviewer.sh [OPTIONS]
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `-t, --timeframe VALUE` | Time window: `"5 minutes"`, `"2 hours"`, `"7 days"`, or `"all"` |
+| `-g, --global y\|n` | Run global insights across all domains |
+| `-i, --inspect y\|n` | Inspect raw entries for a single domain |
+| `-a, --archive y\|n` | Review archived rotated logs from `~/logs` |
+| `--archive-date DATE` | Archive period to inspect, e.g. `Feb-2026` |
+| `--archive-domain NAME` | Domain to inspect in archive mode |
+| `-d, --domain NAME` | Domain log name for inspect mode |
+| `-u, --user USER` | Read logs from another cPanel user when permitted |
+| `-h, --help` | Show help |
+
+---
+
+## Examples
+```bash
+# Interactive run
+bash logs-reviewer.sh
+
+# Non-interactive, last 2 hours, global summary
+bash logs-reviewer.sh -t "2 hours" -g y -i n -a n
+
+# As root, scoped to a specific cPanel user
+bash logs-reviewer.sh -u clientusername -t "1 hour" -g y -i n -a n
+
+# Review a specific archived month
+bash logs-reviewer.sh -a y --archive-date Feb-2026 --archive-domain example.com
+```
+
+---
+
+## Output Sections
+
+| Section | Description |
+|---------|-------------|
+| Top IPs | Request count, IP, PTR host, Org / ISP |
+| Top PTR Hosts | Grouped reverse-DNS hostnames |
+| Top PTR Providers | Grouped by provider (e.g. amazonaws.com) |
+| Top URLs | Most requested paths |
+| HTTP Methods | GET / POST / HEAD breakdown |
+| Status Codes | With percentage of total |
+| Bots | Detected crawler user-agents |
+| Top Referrers | External referrer breakdown |
+| Top 4xx URLs | Most frequent client error paths |
+| Top 5xx URLs | Most frequent server error paths |
+| Top Error IP/Status Pairs | Combined IP + status for error traffic |
+| Peak Minute Burst | Highest request volume in a single minute |
+
+---
+
+## PTR and Org Lookup Behavior
+
+**PTR / Host Lookup** (per IP, cached per run):
+1. `getent hosts <ip>`
+2. `host <ip>` as fallback
+3. `-` if no record found
+
+**Org / ISP Lookup** (per IP, cached per run):
+1. `ipinfo.io`
+2. `ipwho.is`
+3. `whois` if installed
+4. `-` if all sources fail
+
+An IP may have a valid Org but no PTR record, or the reverse — both are handled independently.
+
+---
+
+## Environment Variables
+
+| Variable | Effect |
+|----------|--------|
+| `NO_COLOR` | Disables ANSI color output |
+| `TERM=dumb` | Disables ANSI styling automatically |
+| `IPINFO_TOKEN` | Optional token for authenticated `ipinfo.io` lookups |
+
+Output stays plain text when piped or redirected.
+
+---
+
+## Caveats
+
+- Reverse DNS is optional — many IPs legitimately have no PTR record
+- Public IP metadata providers may rate-limit unauthenticated traffic
+- PTR enrichment adds latency proportional to the number of unique IPs resolved
+
+---
+
+## Roadmap
+
+A Python rewrite is in progress to replace the enrichment-heavy logic with a more maintainable multi-file architecture. Tracked in `PYTHON_INTEGRATION_TODO.md`.
+
+---
+
+## License
+
+MIT
