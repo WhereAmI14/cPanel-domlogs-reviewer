@@ -325,12 +325,6 @@ def group_ptr_host_family(host):
     return host
 
 
-def bucket_provider(host):
-    if host == "-":
-        return host
-    return registrable_domain(host)
-
-
 def print_counted_table(rows, value_label, max_len):
     if not rows:
         print_empty()
@@ -352,14 +346,11 @@ def print_top_ips(ip_counts):
         print(f"{count:8d}  {ip:<39} {host:<42} {org}")
 
 
-def print_grouped_ptr(ip_counts, mode, label):
+def print_grouped_ptr(ip_counts, label):
     grouped = collections.defaultdict(lambda: {"requests": 0, "ips": set()})
     for ip, count in ip_counts.items():
         host = resolve_ptr(ip)
-        if mode == "provider":
-            key = bucket_provider(host)
-        else:
-            key = group_ptr_host_family(host)
+        key = group_ptr_host_family(host)
         grouped[key]["requests"] += count
         grouped[key]["ips"].add(ip)
 
@@ -433,11 +424,7 @@ def run_summary(args):
 
     print()
     print(f"{GREEN}Top PTR Hosts{DEF}")
-    print_grouped_ptr(summary["ip_counts"], "host", "PTR Host Group")
-
-    print()
-    print(f"{GREEN}Top PTR Providers{DEF}")
-    print_grouped_ptr(summary["ip_counts"], "provider", "PTR Provider")
+    print_grouped_ptr(summary["ip_counts"], "PTR Host Group")
 
     print()
     print(f"{GREEN}Top URLs{DEF}")
