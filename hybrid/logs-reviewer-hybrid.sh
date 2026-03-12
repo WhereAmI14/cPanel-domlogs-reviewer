@@ -73,7 +73,7 @@ download_file() {
   local out="$2"
   curl -fsSL "$url" -o "$out"
 }
-
+# Try to run from local bundle if available
 run_local_bundle() {
   local script_path script_dir
   script_path="${BASH_SOURCE[0]:-}"
@@ -98,7 +98,7 @@ if [[ -z "$BASE_URL" ]]; then
   echo "Use: curl .../logs-reviewer-hybrid.sh | bash -s -- --base-url https://your-url/hybrid [options]" >&2
   exit 2
 fi
-
+# No local bundle, download from BASE_URL
 download_file "$BASE_URL/runner.sh" "$TMPDIR/runner.sh"
 download_file "$BASE_URL/log_enrich.py" "$TMPDIR/log_enrich.py"
 chmod +x "$TMPDIR/runner.sh"

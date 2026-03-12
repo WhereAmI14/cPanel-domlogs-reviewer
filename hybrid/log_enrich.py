@@ -9,6 +9,11 @@ import socket
 import urllib.parse
 import urllib.request
 
+try:
+    import tldextract
+except Exception:
+    tldextract = None
+
 
 LOG_RE = re.compile(
     r'^(?P<ip>\S+) \S+ \S+ \[(?P<time>[^\]]+)\] "(?P<request>[^"]*)" '
@@ -155,43 +160,44 @@ def suffix_wildcard(host, keep_labels):
     return "*." + ".".join(parts[-keep_labels:])
 
 
+def registrable_domain(host):
+    if host == "-":
+        return host
+
+    labels = [label for label in host.split(".") if label]
+    if len(labels) <= 2:
+        return host
+
+    if tldextract is not None:
+        extracted = tldextract.extract(host)
+        if extracted.domain and extracted.suffix:
+            return f"{extracted.domain}.{extracted.suffix}"
+
+    second_level_suffixes = {"ac", "co", "com", "edu", "gov", "net", "org"}
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in second_level_suffixes:
+        return ".".join(labels[-3:])
+
+    return ".".join(labels[-2:])
+
+
 def group_ptr_host_family(host):
     if host == "-":
         return host
-    if host.endswith(".bc.googleusercontent.com"):
-        return suffix_wildcard(host, 3)
-    if host.endswith(".static.cloudzy.com"):
-        return suffix_wildcard(host, 3)
-    if host.endswith(".fra1.stableserver.net") or host.endswith(".stableserver.net"):
-        return suffix_wildcard(host, 3)
-    if host.endswith(".compute.amazonaws.com"):
-        return suffix_wildcard(host, 4)
 
     parts = host.split(".")
+    root = registrable_domain(host)
     first = parts[0] if parts else ""
-    if len(parts) >= 4:
-        return suffix_wildcard(host, 2)
-    if len(parts) == 3 and (any(ch.isdigit() for ch in first) or "-" in first):
-        return suffix_wildcard(host, 2)
+    if len(parts) >= 3 and root not in ("", "-", host):
+        return "*." + root
+    if len(parts) == 2 and root not in ("", "-", host) and (any(ch.isdigit() for ch in first) or "-" in first):
+        return "*." + root
     return host
 
 
 def bucket_provider(host):
     if host == "-":
         return host
-    if host.endswith(".bc.googleusercontent.com") or host.endswith(".googleusercontent.com"):
-        return "googleusercontent.com"
-    if host.endswith(".compute.amazonaws.com") or host.endswith(".amazonaws.com"):
-        return "amazonaws.com"
-    if host.endswith(".colocrossing.com"):
-        return "colocrossing.com"
-    if host.endswith(".cloudflare.com"):
-        return "cloudflare.com"
-    if host.endswith(".digitalocean.com"):
-        return "digitalocean.com"
-    if host.endswith(".linodeusercontent.com"):
-        return "linodeusercontent.com"
-    return host
+    return registrable_domain(host)
 
 
 def print_counted_table(rows, value_label, max_len):
@@ -270,7 +276,8 @@ def print_error_pairs(records):
         print_empty()
         return
 
-    print_bold(f"{'Count':>8}  {'IP':<39} {'PTR Host':<40} {'Org / ISP':<22} Status")
+    print_bold(
+        f"{'Count':>8}  {'IP':<39} {'PTR Host':<40} {'Org / ISP':<22} Status")
     for (ip, status), count in rows:
         host = resolve_ptr(ip)
         org = resolve_org(ip)
@@ -294,14 +301,20 @@ def main():
     total_bytes = sum(record["bytes"] for record in records)
     avg_bytes = (total_bytes / total_requests) if total_requests else 0.0
 
-    bot_records = [record for record in records if re.search(r"bot|crawl|spider", record["ua"], re.I)]
+    bot_records = [record for record in records if re.search(
+        r"bot|crawl|spider", record["ua"], re.I)]
     bot_counter = collections.Counter(record["ua"] for record in bot_records)
-    ref_counter = collections.Counter(record["referrer"] for record in records if record["referrer"] != "-")
-    top4xx = collections.Counter(record["url"] for record in records if record["status"].startswith("4"))
-    top5xx = collections.Counter(record["url"] for record in records if record["status"].startswith("5"))
+    ref_counter = collections.Counter(
+        record["referrer"] for record in records if record["referrer"] != "-")
+    top4xx = collections.Counter(
+        record["url"] for record in records if record["status"].startswith("4"))
+    top5xx = collections.Counter(
+        record["url"] for record in records if record["status"].startswith("5"))
     url_counter = collections.Counter(record["url"] for record in records)
-    method_counter = collections.Counter(record["method"] for record in records)
-    minute_counter = collections.Counter(record["time"][:17] for record in records if record["time"])
+    method_counter = collections.Counter(
+        record["method"] for record in records)
+    minute_counter = collections.Counter(
+        record["time"][:17] for record in records if record["time"])
 
     print()
     print(f"{GREEN}{args.heading}{DEF}")
@@ -336,7 +349,8 @@ def main():
 
     print()
     print(f"{GREEN}Bots{DEF}")
-    bot_pct = (len(bot_records) * 100.0 / total_requests) if total_requests else 0.0
+    bot_pct = (len(bot_records) * 100.0 /
+               total_requests) if total_requests else 0.0
     print(f"Bot requests: {len(bot_records)} ({bot_pct:.2f}%)")
     print_counted_table(bot_counter.most_common(10), "User Agent", 110)
 
@@ -359,7 +373,8 @@ def main():
     print()
     print(f"{GREEN}Peak Minute Burst{DEF}")
     if minute_counter:
-        minute, count = max(minute_counter.items(), key=lambda item: (item[1], item[0]))
+        minute, count = max(minute_counter.items(),
+                            key=lambda item: (item[1], item[0]))
         print(f"{minute} ({count} requests)")
     else:
         print("n/a")

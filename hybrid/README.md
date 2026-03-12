@@ -97,3 +97,5 @@ The helper currently uses:
 - `urllib.request`
 
 Optional future pip modules can still be added later, but they are not required for this prototype.
+
+If `tldextract` is installed, `log_enrich.py` will use it automatically for better registrable-domain extraction when grouping PTR hosts and providers.
