@@ -240,12 +240,7 @@ ensure_python_helper() {
 }
 
 collect_base_logs() {
-  local -A seen=()
-  local -a files=()
-  local f base target_user tmpf scope_user
-
-  tmpf=$(mktemp)
-  cleanup_files+=("$tmpf")
+  local f tmpf scope_user
 
   if [[ "$ME" == "root" ]]; then
     scope_user="${LOG_USER_INPUT:-}"
@@ -253,44 +248,23 @@ collect_base_logs() {
       scope_user=$(read_tty $'\e[36mAs root, enter cPanel username to scan (blank for all users):\e[0m ') || true
       scope_user="${scope_user//[[:space:]]/}"
     fi
-
-    : > "$tmpf"
-    if [[ -n "$scope_user" ]]; then
-      for d in "/home/$scope_user/access-logs" "/home/$scope_user/access_logs"; do
-        [[ -e "$d" ]] || continue
-        find -L "$d" -maxdepth 1 -type f -print0 2>/dev/null >> "$tmpf" || true
-      done
-    else
-      find -L /home -type f \( -path '/home/*/access-logs/*' -o -path '/home/*/access_logs/*' \) -print0 2>/dev/null >> "$tmpf" || true
-    fi
   else
-    target_user="${LOG_USER_INPUT:-$ME}"
-    : > "$tmpf"
-    for d in "/home/$target_user/access-logs" "/home/$target_user/access_logs"; do
-      [[ -e "$d" ]] || continue
-      find -L "$d" -maxdepth 1 -type f -print0 2>/dev/null >> "$tmpf" || true
-    done
+    scope_user="${LOG_USER_INPUT:-$ME}"
   fi
 
-  while IFS= read -r -d '' f; do
-    files+=("$f")
-  done < "$tmpf"
+  tmpf=$(mktemp)
+  cleanup_files+=("$tmpf")
+  python3 "$PY_HELPER" \
+    --mode discover-base \
+    --caller-user "$ME" \
+    --log-user "$scope_user" > "$tmpf"
 
-  for f in "${files[@]}"; do
-    base="${f%-ssl_log}"
-    seen["$base"]=1
-  done
-
-  if [[ ${#seen[@]} -eq 0 ]]; then
-    return 1
-  fi
-
-  : > "$tmpf"
-  printf '%s\n' "${!seen[@]}" | sort > "$tmpf"
   BASE_LOGS=()
   while IFS= read -r f; do
-    BASE_LOGS+=("$f")
+    [[ -n "$f" ]] && BASE_LOGS+=("$f")
   done < "$tmpf"
+
+  [[ ${#BASE_LOGS[@]} -gt 0 ]]
 }
 
 stream_base_log() {
@@ -320,77 +294,42 @@ stream_archived_files() {
 }
 
 collect_archived_logs() {
-  local -A seen_dirs=()
-  local -A seen_files=()
-  local -A seen_periods=()
-  local -a dirs=()
-  local base home_dir archive_dir f bn tmpf scan_tmpf
+  local kind value tmpf
 
   ARCHIVE_LOGS=()
   ARCHIVE_PERIODS=()
 
-  for base in "${BASE_LOGS[@]}"; do
-    home_dir=$(dirname "$(dirname "$base")")
-    archive_dir="$home_dir/logs"
-    if [[ -d "$archive_dir" ]]; then
-      seen_dirs["$archive_dir"]=1
-    fi
-  done
-
-  if [[ ${#seen_dirs[@]} -eq 0 ]]; then
-    return 0
-  fi
-
-  dirs=("${!seen_dirs[@]}")
-  for archive_dir in "${dirs[@]}"; do
-    scan_tmpf=$(mktemp)
-    cleanup_files+=("$scan_tmpf")
-    : > "$scan_tmpf"
-    find -L "$archive_dir" -maxdepth 1 -type f -name '*.gz' -print0 2>/dev/null >> "$scan_tmpf" || true
-
-    while IFS= read -r -d '' f; do
-      seen_files["$f"]=1
-      bn=$(basename "$f")
-      if [[ "$bn" =~ -([A-Za-z]{3}-[0-9]{4})\.gz$ ]]; then
-        seen_periods["${BASH_REMATCH[1]}"]=1
-      fi
-    done < "$scan_tmpf"
-  done
-
-  if [[ ${#seen_files[@]} -eq 0 ]]; then
+  if [[ ${#BASE_LOGS[@]} -eq 0 ]]; then
     return 0
   fi
 
   tmpf=$(mktemp)
   cleanup_files+=("$tmpf")
+  printf '%s\n' "${BASE_LOGS[@]}" | python3 "$PY_HELPER" --mode discover-archives > "$tmpf"
 
-  : > "$tmpf"
-  printf '%s\n' "${!seen_files[@]}" | sort > "$tmpf"
-  while IFS= read -r f; do
-    ARCHIVE_LOGS+=("$f")
+  while IFS=$'\t' read -r kind value; do
+    case "$kind" in
+      LOG) ARCHIVE_LOGS+=("$value") ;;
+      PERIOD) ARCHIVE_PERIODS+=("$value") ;;
+    esac
   done < "$tmpf"
-
-  if [[ ${#seen_periods[@]} -gt 0 ]]; then
-    : > "$tmpf"
-    printf '%s\n' "${!seen_periods[@]}" | sort > "$tmpf"
-    while IFS= read -r f; do
-      ARCHIVE_PERIODS+=("$f")
-    done < "$tmpf"
-  fi
 }
 
 stream_archived_base_log() {
   local base="$1"
-  local base_name bn f
+  local base_name f tmpf
   local -a targets=()
   base_name=$(basename "$base")
 
-  for f in "${ARCHIVE_LOGS[@]}"; do
-    bn=$(basename "$f")
-    if [[ "$bn" == "$base_name"-*.gz || "$bn" == "$base_name-ssl_log"-*.gz ]]; then
-      targets+=("$f")
-    fi
-  done
+  tmpf=$(mktemp)
+  cleanup_files+=("$tmpf")
+  printf '%s\n' "${ARCHIVE_LOGS[@]}" | python3 "$PY_HELPER" \
+    --mode match-base-archives \
+    --base-name "$base_name" > "$tmpf"
+
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && targets+=("$f")
+  done < "$tmpf"
 
   stream_archived_files "${targets[@]}"
 }
@@ -506,14 +445,12 @@ configure_main_data_sources() {
 }
 
 review_archived_logs() {
-  local run_archive date_choice raw_domain base_input match_count show_raw archive_heading
-  local f bn domain tmpf
-  local -a scope_matches=()
-  local -a matched_periods=()
+  local run_archive date_choice raw_domain base_input show_raw archive_heading
+  local kind value tmpf status
+  local -a all_targets=()
   local -a available_domains=()
   local -a archive_targets=()
-  local -A seen_periods=()
-  local -A seen_domains=()
+  local -a matched_files=()
 
   if [[ ${#ARCHIVE_LOGS[@]} -eq 0 ]]; then
     return 0
@@ -544,45 +481,32 @@ review_archived_logs() {
     date_choice="${ARCHIVE_PERIODS[0]}"
   fi
 
-  scope_matches=()
-  if [[ -n "$date_choice" ]]; then
-    for f in "${ARCHIVE_LOGS[@]}"; do
-      bn=$(basename "$f")
-      if [[ "$bn" == *"-$date_choice.gz" ]]; then
-        scope_matches+=("$f")
-      fi
-    done
-    if [[ ${#scope_matches[@]} -eq 0 ]]; then
-      echo "No archived logs found for date: $date_choice"
-      return 0
-    fi
-  else
-    scope_matches=("${ARCHIVE_LOGS[@]}")
-  fi
-
-  seen_domains=()
-  for f in "${scope_matches[@]}"; do
-    bn=$(basename "$f")
-    domain=""
-    if [[ "$bn" =~ ^(.+)-ssl_log-[A-Za-z]{3}-[0-9]{4}\.gz$ ]]; then
-      domain="${BASH_REMATCH[1]}"
-    elif [[ "$bn" =~ ^(.+)-[A-Za-z]{3}-[0-9]{4}\.gz$ ]]; then
-      domain="${BASH_REMATCH[1]}"
-    fi
-    if [[ -n "$domain" ]]; then
-      seen_domains["$domain"]=1
-    fi
-  done
+  tmpf=$(mktemp)
+  cleanup_files+=("$tmpf")
+  printf '%s\n' "${ARCHIVE_LOGS[@]}" | python3 "$PY_HELPER" \
+    --mode archive-query \
+    --date-choice "$date_choice" \
+    --raw-domain "" > "$tmpf"
 
   available_domains=()
-  if [[ ${#seen_domains[@]} -gt 0 ]]; then
-    tmpf=$(mktemp)
-    cleanup_files+=("$tmpf")
-    : > "$tmpf"
-    printf '%s\n' "${!seen_domains[@]}" | sort > "$tmpf"
-    while IFS= read -r domain; do
-      available_domains+=("$domain")
-    done < "$tmpf"
+  all_targets=()
+  archive_targets=()
+  matched_files=()
+  archive_heading=""
+  base_input=""
+  status=""
+  while IFS=$'\t' read -r kind value; do
+    case "$kind" in
+      STATUS) status="$value" ;;
+      AVAILABLE_DOMAIN) available_domains+=("$value") ;;
+      HEADING) archive_heading="$value" ;;
+      TARGET) all_targets+=("$value") ;;
+    esac
+  done < "$tmpf"
+
+  if [[ "$status" == "NO_DATE_MATCH" ]]; then
+    echo "No archived logs found for date: $date_choice"
+    return 0
   fi
 
   if [[ ${#available_domains[@]} -gt 0 ]]; then
@@ -604,32 +528,29 @@ review_archived_logs() {
   raw_domain="${raw_domain//[[:space:]]/}"
 
   if [[ -z "$raw_domain" ]]; then
-    archive_targets=("${scope_matches[@]}")
-    if [[ -n "$date_choice" ]]; then
-      archive_heading="Archived summary ($date_choice, all domains)"
-    else
-      archive_heading="Archived summary (all dates, all domains)"
-    fi
+    archive_targets=("${all_targets[@]}")
   else
-    base_input="${raw_domain%-ssl_log}"
-    match_count=0
-    matched_periods=()
-    archive_targets=()
-    for f in "${scope_matches[@]}"; do
-      bn=$(basename "$f")
-      if [[ "$bn" == "$base_input"-*.gz || "$bn" == "$base_input-ssl_log"-*.gz ]]; then
-        match_count=$((match_count + 1))
-        archive_targets+=("$f")
-        if [[ "$bn" =~ -([A-Za-z]{3}-[0-9]{4})\.gz$ ]]; then
-          if [[ -z "${seen_periods[${BASH_REMATCH[1]}]:-}" ]]; then
-            seen_periods["${BASH_REMATCH[1]}"]=1
-            matched_periods+=("${BASH_REMATCH[1]}")
-          fi
-        fi
-      fi
-    done
+    printf '%s\n' "${ARCHIVE_LOGS[@]}" | python3 "$PY_HELPER" \
+      --mode archive-query \
+      --date-choice "$date_choice" \
+      --raw-domain "$raw_domain" > "$tmpf"
 
-    if [[ "$match_count" -eq 0 ]]; then
+    status=""
+    archive_targets=()
+    matched_files=()
+    archive_heading=""
+    base_input=""
+    while IFS=$'\t' read -r kind value; do
+      case "$kind" in
+        STATUS) status="$value" ;;
+        HEADING) archive_heading="$value" ;;
+        BASE_INPUT) base_input="$value" ;;
+        MATCHED_FILE) matched_files+=("$value") ;;
+        TARGET) archive_targets+=("$value") ;;
+      esac
+    done < "$tmpf"
+
+    if [[ "$status" == "NO_DOMAIN_MATCH" ]]; then
       if [[ -n "$date_choice" ]]; then
         echo "No matching archived log found for domain: $base_input ($date_choice)"
       else
@@ -638,23 +559,12 @@ review_archived_logs() {
       return 0
     fi
 
-    if [[ -n "$date_choice" ]]; then
-      archive_heading="Archived summary ($date_choice, $base_input)"
-    elif [[ ${#matched_periods[@]} -gt 0 ]]; then
-      archive_heading="Archived summary (${matched_periods[*]}, $base_input)"
-    else
-      archive_heading="Archived summary (all dates, $base_input)"
+    if [[ ${#matched_files[@]} -gt 0 ]]; then
+      echo
+      echo "${GREEN}Archived files for $base_input (${#matched_files[@]} files)${DEF}"
+      printf ' - %s\n' "${matched_files[@]}"
+      echo
     fi
-
-    echo
-    echo "${GREEN}Archived files for $base_input (${match_count} files)${DEF}"
-    for f in "${scope_matches[@]}"; do
-      bn=$(basename "$f")
-      if [[ "$bn" == "$base_input"-*.gz || "$bn" == "$base_input-ssl_log"-*.gz ]]; then
-        echo " - $bn"
-      fi
-    done
-    echo
   fi
 
   stream_archived_files "${archive_targets[@]}" | print_python_summary_from_stream "$archive_heading"

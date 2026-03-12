@@ -44,6 +44,9 @@ MONTHS = {
 
 PTR_CACHE = {}
 ORG_CACHE = {}
+ARCHIVE_PERIOD_RE = re.compile(r"-([A-Za-z]{3}-\d{4})\.gz$")
+ARCHIVE_SSL_RE = re.compile(r"^(.+)-ssl_log-[A-Za-z]{3}-\d{4}\.gz$")
+ARCHIVE_PLAIN_RE = re.compile(r"^(.+)-[A-Za-z]{3}-\d{4}\.gz$")
 
 
 def use_color():
@@ -76,6 +79,15 @@ def print_empty():
     print("  (none)")
 
 
+def print_heading_block(text):
+    divider = "=" * max(32, len(text))
+    color = CYAN if text.startswith("Domain: ") else GREEN
+    print()
+    print(f"{color}{divider}{DEF}")
+    print(f"{color}{text}{DEF}")
+    print(f"{color}{divider}{DEF}")
+
+
 def colorize_status(status):
     if not USE_COLOR or not status or not status[0].isdigit():
         return status
@@ -94,6 +106,13 @@ def iter_lines(path):
 
     for line in sys.stdin:
         yield line
+
+
+def iter_input_values(path):
+    for line in iter_lines(path):
+        value = line.rstrip("\n")
+        if value:
+            yield value
 
 
 def parse_apache_epoch(time_value):
@@ -127,6 +146,184 @@ def parse_apache_epoch(time_value):
         return None
 
     return int(timestamp.timestamp())
+
+# discover base logs based on caller user and requested user, with fallback to scanning all home directories for root caller if no requested user provided
+
+
+def discover_base_logs(caller_user, requested_user):
+    seen = set()
+    base_logs = set()
+
+    if caller_user == "root":
+        users = [requested_user] if requested_user else []
+        if not users:
+            try:
+                with os.scandir("/home") as entries:
+                    users = sorted(
+                        entry.name
+                        for entry in entries
+                        if entry.is_dir(follow_symlinks=True)
+                    )
+            except OSError:
+                users = []
+    else:
+        users = [requested_user or caller_user]
+
+    for user in users:
+        for suffix in ("access-logs", "access_logs"):
+            log_dir = os.path.join("/home", user, suffix)
+            if not os.path.isdir(log_dir):
+                continue
+            try:
+                with os.scandir(log_dir) as entries:
+                    for entry in entries:
+                        try:
+                            is_file = entry.is_file(follow_symlinks=True)
+                        except OSError:
+                            continue
+                        if not is_file:
+                            continue
+                        path = os.path.join(log_dir, entry.name)
+                        if path in seen:
+                            continue
+                        seen.add(path)
+                        if path.endswith("-ssl_log"):
+                            path = path[:-8]
+                        base_logs.add(path)
+            except OSError:
+                continue
+
+    for path in sorted(base_logs):
+        print(path)
+
+# discover archive logs based on provided base logs, and extract available periods and domains from them
+
+
+def discover_archives(base_logs):
+    archive_logs = set()
+    archive_periods = set()
+    archive_dirs = set()
+
+    for base in base_logs:
+        home_dir = os.path.dirname(os.path.dirname(base))
+        archive_dir = os.path.join(home_dir, "logs")
+        if os.path.isdir(archive_dir):
+            archive_dirs.add(archive_dir)
+
+    for archive_dir in sorted(archive_dirs):
+        try:
+            with os.scandir(archive_dir) as entries:
+                for entry in entries:
+                    try:
+                        is_file = entry.is_file(follow_symlinks=True)
+                    except OSError:
+                        continue
+                    if not is_file or not entry.name.endswith(".gz"):
+                        continue
+                    path = os.path.join(archive_dir, entry.name)
+                    archive_logs.add(path)
+                    match = ARCHIVE_PERIOD_RE.search(entry.name)
+                    if match:
+                        archive_periods.add(match.group(1))
+        except OSError:
+            continue
+
+    for path in sorted(archive_logs):
+        print(f"LOG\t{path}")
+    for period in sorted(archive_periods):
+        print(f"PERIOD\t{period}")
+
+
+def archive_domain_from_name(name):
+    match = ARCHIVE_SSL_RE.match(name)
+    if match:
+        return match.group(1)
+    match = ARCHIVE_PLAIN_RE.match(name)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def archive_query(archive_logs, date_choice, raw_domain):
+    scope_matches = []
+    for path in archive_logs:
+        name = os.path.basename(path)
+        if date_choice and not name.endswith(f"-{date_choice}.gz"):
+            continue
+        scope_matches.append(path)
+
+    if date_choice and not scope_matches:
+        print("STATUS\tNO_DATE_MATCH")
+        return
+
+    available_domains = sorted(
+        {
+            domain
+            for domain in (archive_domain_from_name(os.path.basename(path)) for path in scope_matches)
+            if domain
+        }
+    )
+
+    for domain in available_domains:
+        print(f"AVAILABLE_DOMAIN\t{domain}")
+
+    if not raw_domain:
+        heading = (
+            f"Archived summary ({date_choice}, all domains)"
+            if date_choice
+            else "Archived summary (all dates, all domains)"
+        )
+        print("STATUS\tOK")
+        print(f"HEADING\t{heading}")
+        for path in scope_matches:
+            print(f"TARGET\t{path}")
+        return
+
+    base_input = raw_domain[:-
+                            8] if raw_domain.endswith("-ssl_log") else raw_domain
+    targets = []
+    matched_periods = set()
+    matched_files = []
+    for path in scope_matches:
+        name = os.path.basename(path)
+        if name.startswith(f"{base_input}-") or name.startswith(f"{base_input}-ssl_log-"):
+            targets.append(path)
+            matched_files.append(name)
+            match = ARCHIVE_PERIOD_RE.search(name)
+            if match:
+                matched_periods.add(match.group(1))
+
+    if not targets:
+        print("STATUS\tNO_DOMAIN_MATCH")
+        print(f"BASE_INPUT\t{base_input}")
+        return
+
+    if date_choice:
+        heading = f"Archived summary ({date_choice}, {base_input})"
+    elif matched_periods:
+        heading = f"Archived summary ({' '.join(sorted(matched_periods))}, {base_input})"
+    else:
+        heading = f"Archived summary (all dates, {base_input})"
+
+    print("STATUS\tOK")
+    print(f"BASE_INPUT\t{base_input}")
+    print(f"HEADING\t{heading}")
+    for period in sorted(matched_periods):
+        print(f"MATCHED_PERIOD\t{period}")
+    for name in sorted(matched_files):
+        print(f"MATCHED_FILE\t{name}")
+    for path in targets:
+        print(f"TARGET\t{path}")
+
+
+def match_base_archives(archive_logs, base_name):
+    for path in archive_logs:
+        name = os.path.basename(path)
+        domain = archive_domain_from_name(name)
+        if not domain:
+            continue
+        if domain == base_name:
+            print(path)
 
 
 def parse_log_line(line):
@@ -411,8 +608,7 @@ def run_summary(args):
     unique_ips = len(summary["ip_counts"])
     avg_bytes = total_bytes / total_requests if total_requests else 0.0
 
-    print()
-    print(f"{GREEN}{args.heading}{DEF}")
+    print_heading_block(args.heading)
     print(f"Requests: {total_requests}")
     print(f"Unique IPs: {unique_ips}")
     print(f"Transferred bytes: {total_bytes}")
@@ -440,13 +636,16 @@ def run_summary(args):
 
     print()
     print(f"{GREEN}Bots{DEF}")
-    bot_pct = (summary["bot_requests"] * 100.0 / total_requests) if total_requests else 0.0
+    bot_pct = (summary["bot_requests"] * 100.0 /
+               total_requests) if total_requests else 0.0
     print(f"Bot requests: {summary['bot_requests']} ({bot_pct:.2f}%)")
-    print_counted_table(summary["bot_counter"].most_common(10), "User Agent", 110)
+    print_counted_table(
+        summary["bot_counter"].most_common(10), "User Agent", 110)
 
     print()
     print(f"{GREEN}Top Referrers{DEF}")
-    print_counted_table(summary["ref_counter"].most_common(10), "Referrer", 110)
+    print_counted_table(
+        summary["ref_counter"].most_common(10), "Referrer", 110)
 
     print()
     print(f"{GREEN}Top 4xx URLs{DEF}")
@@ -477,13 +676,26 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=("summary", "oldest-epoch", "filter-raw"),
+        choices=(
+            "summary",
+            "oldest-epoch",
+            "filter-raw",
+            "discover-base",
+            "discover-archives",
+            "archive-query",
+            "match-base-archives",
+        ),
         default="summary",
     )
     parser.add_argument("--input-file")
     parser.add_argument("--heading")
     parser.add_argument("--cutoff-epoch", type=int, default=0)
     parser.add_argument("--quiet-empty", action="store_true")
+    parser.add_argument("--caller-user")
+    parser.add_argument("--log-user", default="")
+    parser.add_argument("--date-choice", default="")
+    parser.add_argument("--raw-domain", default="")
+    parser.add_argument("--base-name", default="")
     args = parser.parse_args()
 
     if args.mode == "summary":
@@ -495,7 +707,28 @@ def main():
         print_oldest_epoch(args.input_file)
         return
 
-    print_filtered_raw(args.input_file, args.cutoff_epoch)
+    if args.mode == "filter-raw":
+        print_filtered_raw(args.input_file, args.cutoff_epoch)
+        return
+
+    if args.mode == "discover-base":
+        if not args.caller_user:
+            parser.error("--caller-user is required in discover-base mode")
+        discover_base_logs(args.caller_user, args.log_user)
+        return
+
+    if args.mode == "discover-archives":
+        discover_archives(iter_input_values(args.input_file))
+        return
+
+    if args.mode == "match-base-archives":
+        if not args.base_name:
+            parser.error("--base-name is required in match-base-archives mode")
+        match_base_archives(iter_input_values(args.input_file), args.base_name)
+        return
+
+    archive_query(iter_input_values(args.input_file),
+                  args.date_choice, args.raw_domain)
 
 
 if __name__ == "__main__":
