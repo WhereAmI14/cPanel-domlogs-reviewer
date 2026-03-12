@@ -52,6 +52,7 @@ Options:
   -g, --global y|n         Run global insights
   -i, --inspect y|n        Inspect raw entries for a single domain
   -a, --archive y|n        Review archived rotated logs from ~/logs
+      --threshold N        Inline-domain threshold before compact mode (default: 20)
       --archive-date DATE  Archive date token to inspect (example: Feb-2026)
       --archive-domain N   Domain log name for archive inspect
   -d, --domain NAME        Domain log name for inspect mode
@@ -83,6 +84,12 @@ while [[ $# -gt 0 ]]; do
     -a|--archive)
       [[ $# -lt 2 ]] && { echo "Missing value for $1" >&2; exit 2; }
       RUN_ARCHIVE_INPUT="$2"
+      shift 2
+      ;;
+    --threshold|--threshhold)
+      [[ $# -lt 2 ]] && { echo "Missing value for $1" >&2; exit 2; }
+      [[ "$2" =~ ^[0-9]+$ ]] || { echo "Invalid value for $1: $2" >&2; exit 2; }
+      MAX_DOMAINS_INLINE="$2"
       shift 2
       ;;
     --archive-date)
@@ -692,6 +699,7 @@ main() {
     build_domain_metrics "$metrics_file" "$report_file" || return $?
 
     echo "${RED}Compact mode enabled:${DEF} ${#BASE_LOGS[@]} domains exceeds inline threshold ${MAX_DOMAINS_INLINE}"
+    echo "${YELLOW}To increase the inline limit, rerun with:${DEF} --threshold 50"
     echo "${GREEN}Full report saved to:${DEF} $report_file"
     print_domain_rollup_from_file "$metrics_file"
     echo
