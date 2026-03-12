@@ -699,7 +699,7 @@ main() {
     build_domain_metrics "$metrics_file" "$report_file" || return $?
 
     echo "${RED}Compact mode enabled:${DEF} ${#BASE_LOGS[@]} domains exceeds inline threshold ${MAX_DOMAINS_INLINE}"
-    echo "${YELLOW}To increase the inline limit, rerun with:${DEF} --threshold 50"
+    echo "${YELLOW}To increase the inline limit, rerun with the threshold option:${DEF} curl -fsSL URL | bash -s -- --threshold 50"
     echo "${GREEN}Full report saved to:${DEF} $report_file"
     print_domain_rollup_from_file "$metrics_file"
     echo
