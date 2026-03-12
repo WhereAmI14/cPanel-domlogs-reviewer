@@ -14,7 +14,9 @@ GREEN=$'\033[32;1m'
 YELLOW=$'\033[33;1m'
 BLUE=$'\033[34;1m'
 MAGENTA=$'\033[35;1m'
+
 DEF=$'\033[0m'
+BOLD=$'\033[1m'
 
 # The script is designed to be interactive but also supports non-interactive use with explicit options.
 ME=$(whoami)
@@ -25,6 +27,8 @@ REQUESTED_LOOKBACK_SECS=0
 MAIN_INCLUDE_ARCHIVES=0
 ACTIVE_OLDEST_EPOCH=0
 COMBINED_OLDEST_EPOCH=0
+DNS_TIMEOUT_SECS=2
+IPINFO_TIMEOUT_SECS=3
 
 # Only emit ANSI colors when writing to a terminal (and not explicitly disabled).
 USE_COLOR=0
@@ -44,10 +48,12 @@ ARCHIVE_DOMAIN_INPUT=""
 LOG_USER_INPUT=""
 declare -a ARCHIVE_LOGS=()
 declare -a ARCHIVE_PERIODS=()
+declare -A PTR_CACHE=()
+declare -A ORG_CACHE=()
 
 usage() {
   cat <<'EOF'
-Usage: logs-reviewer.sh [options]
+Usage: logs-reviewer-ptr.sh [options]
 
 Options:
   -t, --timeframe VALUE    Time window (examples: "5 minutes", "24 hours", "all")
@@ -132,7 +138,7 @@ on_err() {
   exit "$ec"
 }
 trap 'on_err $LINENO' ERR
-
+# The script is designed to be interactive but also supports non-interactive use with explicit options. When running in non-interactive mode, all necessary options must be provided via command-line arguments; otherwise, the script will prompt for input or exit with an error if input is not possible.
 read_tty() {
   local prompt="$1"
   local out
@@ -163,7 +169,7 @@ colorize_status_last_field() {
     cat
     return
   fi
-
+# Colorize status codes by class: 2xx green, 3xx cyan, 4xx yellow, 5xx red.
   awk -v c2="$GREEN" -v c3="$CYAN" -v c4="$YELLOW" -v c5="$RED" -v def="$DEF" '
     {
       code=$NF
@@ -179,6 +185,41 @@ colorize_status_last_field() {
       print
     }
   '
+}
+
+print_bold_line() {
+  if [[ "$USE_COLOR" -eq 1 ]]; then
+    printf "%s%s%s\n" "$BOLD" "$1" "$DEF"
+  else
+    printf "%s\n" "$1"
+  fi
+}
+
+print_empty_summary() {
+  echo "  (none)"
+}
+
+print_counted_table_from_file() {
+  local source_file="$1"
+  local limit="$2"
+  local value_label="$3"
+  local max_len="${4:-0}"
+
+  if [[ ! -s "$source_file" ]]; then
+    print_empty_summary
+    return 0
+  fi
+
+  print_bold_line "$(printf "%8s  %s" "Count" "$value_label")"
+  awk -F'\t' -v limit="$limit" -v max_len="$max_len" '
+    NR <= limit {
+      value = $2
+      if (max_len > 3 && length(value) > max_len) {
+        value = substr(value, 1, max_len - 3) "..."
+      }
+      printf "%8d  %s\n", $1, value
+    }
+  ' "$source_file"
 }
 
 parse_timeframe_value() {
@@ -591,10 +632,358 @@ print_status_with_percent() {
   awk -v total="$total" '{s[$9]++} END {for (code in s) printf "%8d  %6.2f%%  %s\n", s[code], (s[code] * 100 / total), code}' "$file" | sort -nr | colorize_status_last_field
 }
 
+resolve_ptr_host() {
+  local ip="$1"
+  local host=""
+
+  if [[ -n "${PTR_CACHE[$ip]+x}" ]]; then
+    printf '%s' "${PTR_CACHE[$ip]}"
+    return 0
+  fi
+
+  if command -v getent >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      host=$(timeout "${DNS_TIMEOUT_SECS}s" getent hosts "$ip" 2>/dev/null | awk 'NR==1 {print $2}')
+    else
+      host=$(getent hosts "$ip" 2>/dev/null | awk 'NR==1 {print $2}')
+    fi
+  fi
+
+  if [[ -z "$host" ]] && command -v host >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      host=$(timeout "${DNS_TIMEOUT_SECS}s" host "$ip" 2>/dev/null | awk '/domain name pointer/ {gsub(/\.$/, "", $NF); print $NF; exit}')
+    else
+      host=$(host "$ip" 2>/dev/null | awk '/domain name pointer/ {gsub(/\.$/, "", $NF); print $NF; exit}')
+    fi
+  fi
+
+  if [[ -z "$host" || "$host" == "$ip" ]]; then
+    host="-"
+  fi
+
+  PTR_CACHE["$ip"]="$host"
+  printf '%s' "$host"
+}
+
+extract_json_string_field() {
+  local json="$1"
+  local field="$2"
+
+  printf '%s\n' "$json" | sed -n "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1
+}
+
+lookup_ipinfo_json() {
+  local ip="$1"
+  local url="https://ipinfo.io/${ip}/json"
+
+  if [[ -n "${IPINFO_TOKEN:-}" ]]; then
+    url+="?token=${IPINFO_TOKEN}"
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${IPINFO_TIMEOUT_SECS}s" curl -fsS "$url" 2>/dev/null || true
+  else
+    curl -fsS "$url" 2>/dev/null || true
+  fi
+}
+
+lookup_ipwhois_json() {
+  local ip="$1"
+  local url="https://ipwho.is/${ip}"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${IPINFO_TIMEOUT_SECS}s" curl -fsS "$url" 2>/dev/null || true
+  else
+    curl -fsS "$url" 2>/dev/null || true
+  fi
+}
+
+lookup_ip_org_from_whois() {
+  local ip="$1"
+
+  if ! command -v whois >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${IPINFO_TIMEOUT_SECS}s" whois "$ip" 2>/dev/null | awk -F': *' '
+      BEGIN { IGNORECASE=1 }
+      /^(orgname|org-name|org-name-ext|owner|organization|org|descr|netname):/ {
+        if ($2 != "" && $2 !~ /abuse|maintainer|role/i) {
+          print $2
+          exit
+        }
+      }
+    '
+  else
+    whois "$ip" 2>/dev/null | awk -F': *' '
+      BEGIN { IGNORECASE=1 }
+      /^(orgname|org-name|org-name-ext|owner|organization|org|descr|netname):/ {
+        if ($2 != "" && $2 !~ /abuse|maintainer|role/i) {
+          print $2
+          exit
+        }
+      }
+    '
+  fi
+}
+
+resolve_ip_org() {
+  local ip="$1"
+  local response="" org="" isp=""
+
+  if [[ -n "${ORG_CACHE[$ip]+x}" ]]; then
+    printf '%s' "${ORG_CACHE[$ip]}"
+    return 0
+  fi
+
+  response=$(lookup_ipinfo_json "$ip")
+
+  if [[ -n "$response" ]]; then
+    if command -v jq >/dev/null 2>&1; then
+      org=$(printf '%s' "$response" | jq -r '.org // empty' 2>/dev/null || true)
+    else
+      org=$(extract_json_string_field "$response" "org")
+    fi
+  fi
+
+  org="${org#AS[0-9]* }"
+
+  if [[ -z "$org" || "$org" == "null" ]]; then
+    response=$(lookup_ipwhois_json "$ip")
+    if [[ -n "$response" ]]; then
+      if command -v jq >/dev/null 2>&1; then
+        org=$(printf '%s' "$response" | jq -r '.connection.org // empty' 2>/dev/null || true)
+        isp=$(printf '%s' "$response" | jq -r '.connection.isp // empty' 2>/dev/null || true)
+      else
+        org=$(extract_json_string_field "$response" "org")
+        isp=$(extract_json_string_field "$response" "isp")
+      fi
+      if [[ -z "$org" || "$org" == "null" ]]; then
+        org="$isp"
+      fi
+    fi
+  fi
+
+  if [[ -z "$org" || "$org" == "null" ]]; then
+    org=$(lookup_ip_org_from_whois "$ip")
+  fi
+
+  if [[ -z "$org" || "$org" == "null" ]]; then
+    org="-"
+  fi
+
+  ORG_CACHE["$ip"]="$org"
+  printf '%s' "$org"
+}
+
+bucket_ptr_host() {
+  local host="$1"
+
+  case "$host" in
+    -)
+      printf '%s' "-"
+      ;;
+    *.bc.googleusercontent.com|*.googleusercontent.com)
+      printf '%s' "googleusercontent.com"
+      ;;
+    *.compute.amazonaws.com|*.amazonaws.com)
+      printf '%s' "amazonaws.com"
+      ;;
+    *.colocrossing.com)
+      printf '%s' "colocrossing.com"
+      ;;
+    *.cloudflare.com)
+      printf '%s' "cloudflare.com"
+      ;;
+    *.digitalocean.com)
+      printf '%s' "digitalocean.com"
+      ;;
+    *.linodeusercontent.com)
+      printf '%s' "linodeusercontent.com"
+      ;;
+    *)
+      printf '%s' "$host"
+      ;;
+  esac
+}
+
+suffix_wildcard() {
+  local host="$1"
+  local keep_labels="$2"
+  local IFS='.'
+  local -a parts=()
+  local suffix=""
+  local i start
+
+  read -r -a parts <<< "$host"
+  if (( ${#parts[@]} <= keep_labels )); then
+    printf '%s' "$host"
+    return 0
+  fi
+
+  start=$((${#parts[@]} - keep_labels))
+  suffix="${parts[$start]}"
+  for ((i = start + 1; i < ${#parts[@]}; i++)); do
+    suffix+=".${parts[$i]}"
+  done
+
+  printf '*.%s' "$suffix"
+}
+
+group_ptr_host_family() {
+  local host="$1"
+  local IFS='.'
+  local -a parts=()
+  local first_label=""
+
+  read -r -a parts <<< "$host"
+  if (( ${#parts[@]} == 0 )); then
+    printf '%s' "$host"
+    return 0
+  fi
+  first_label="${parts[0]}"
+
+  case "$host" in
+    -)
+      printf '%s' "-"
+      ;;
+    *.bc.googleusercontent.com)
+      suffix_wildcard "$host" 3
+      ;;
+    *.static.cloudzy.com)
+      suffix_wildcard "$host" 3
+      ;;
+    *.fra1.stableserver.net|*.stableserver.net)
+      suffix_wildcard "$host" 3
+      ;;
+    *.compute.amazonaws.com)
+      suffix_wildcard "$host" 4
+      ;;
+    *)
+      if (( ${#parts[@]} >= 4 )); then
+        suffix_wildcard "$host" 2
+      elif (( ${#parts[@]} == 3 )) && [[ "$first_label" == *[0-9]* || "$first_label" == *-* ]]; then
+        suffix_wildcard "$host" 2
+      else
+        printf '%s' "$host"
+      fi
+      ;;
+  esac
+}
+
+print_top_ips_with_hosts() {
+  local source_file="$1"
+  local limit="${2:-10}"
+  local count ip host org tmpf
+
+  tmpf=$(mktemp)
+  cleanup_files+=("$tmpf")
+  awk '{print $1}' "$source_file" | sort | uniq -c | sort -rh | awk -v limit="$limit" 'NR<=limit {print $1, $2}' > "$tmpf"
+
+  print_bold_line "$(printf "%8s  %-39s %-42s %s" "Count" "IP" "PTR Host" "Org / ISP")"
+
+  while read -r count ip; do
+    [[ -n "${ip:-}" ]] || continue
+    host=$(resolve_ptr_host "$ip")
+    org=$(resolve_ip_org "$ip")
+    printf "%8d  %-39s %-42s %s\n" "$count" "$ip" "$host" "$org"
+  done < "$tmpf"
+}
+
+print_top_ptr_groups() {
+  local source_file="$1"
+  local limit="$2"
+  local group_kind="$3"
+  local group_label="$4"
+  local ip_counts_tmp group_rows_tmp summary_tmp
+  local count ip host group_value
+
+  ip_counts_tmp=$(mktemp)
+  group_rows_tmp=$(mktemp)
+  summary_tmp=$(mktemp)
+  cleanup_files+=("$ip_counts_tmp" "$group_rows_tmp" "$summary_tmp")
+
+  awk '{print $1}' "$source_file" | sort | uniq -c | sort -rh > "$ip_counts_tmp"
+
+  while read -r count ip; do
+    [[ -n "${ip:-}" ]] || continue
+    host=$(resolve_ptr_host "$ip")
+    if [[ "$group_kind" == "provider" ]]; then
+      group_value=$(bucket_ptr_host "$host")
+    else
+      group_value=$(group_ptr_host_family "$host")
+    fi
+    printf "%s\t%s\t%s\n" "$count" "$group_value" "$ip" >> "$group_rows_tmp"
+  done < "$ip_counts_tmp"
+
+  awk -F'\t' '
+    {
+      entries[$2] += $1
+      groups[$2]++
+    }
+    END {
+      for (group in entries) {
+        printf "%d\t%d\t%s\n", entries[group], groups[group], group
+      }
+    }
+  ' "$group_rows_tmp" | sort -t $'\t' -k1,1nr -k2,2nr -k3,3 > "$summary_tmp"
+
+  print_bold_line "$(printf "%8s  %9s  %s" "Requests" "Unique IPs" "$group_label")"
+  awk -F'\t' -v limit="$limit" 'NR<=limit {printf "%8d  %9d  %s\n", $1, $2, $3}' "$summary_tmp"
+}
+
+print_top_ptr_hosts() {
+  local source_file="$1"
+  local limit="${2:-10}"
+
+  print_top_ptr_groups "$source_file" "$limit" "host" "PTR Host Group"
+}
+
+print_top_ptr_providers() {
+  local source_file="$1"
+  local limit="${2:-10}"
+
+  print_top_ptr_groups "$source_file" "$limit" "provider" "PTR Provider"
+}
+
+print_error_ip_status_pairs_with_hosts() {
+  local source_file="$1"
+  local limit="${2:-10}"
+  local count ip status host org tmpf
+
+  tmpf=$(mktemp)
+  cleanup_files+=("$tmpf")
+  awk '$9 ~ /^[45]/ {print $1, $9}' "$source_file" | sort | uniq -c | sort -rh | awk -v limit="$limit" 'NR<=limit {print $1, $2, $3}' > "$tmpf"
+
+  if [[ ! -s "$tmpf" ]]; then
+    print_empty_summary
+    return 0
+  fi
+
+  print_bold_line "$(printf "%8s  %-39s %-40s %-22s %s" "Count" "IP" "PTR Host" "Org / ISP" "Status")"
+
+  while read -r count ip status; do
+    [[ -n "${status:-}" ]] || continue
+    host=$(resolve_ptr_host "$ip")
+    org=$(resolve_ip_org "$ip")
+    printf "%8d  %-39s %-40s %-22s %s\n" "$count" "$ip" "$host" "$org" "$status"
+  done < "$tmpf"
+}
+# The main insights function prints various summaries and top lists based on the filtered log data. It handles the case where no data is available for the selected timeframe and includes bot detection based on user agent strings.
 print_insights_from_file() {
   local source_file="$1"
   local heading="$2"
   local total_requests unique_ips total_bytes avg_bytes bot_hits bot_pct
+  local bots_tmp referrers_tmp top4xx_tmp top5xx_tmp
 
   if [[ ! -s "$source_file" ]]; then
     echo
@@ -616,7 +1005,15 @@ print_insights_from_file() {
 
   echo
   echo "${GREEN}Top IPs${DEF}"
-  awk '{print $1}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10'
+  print_top_ips_with_hosts "$source_file" 10
+
+  echo
+  echo "${GREEN}Top PTR Hosts${DEF}"
+  print_top_ptr_hosts "$source_file" 10
+
+  echo
+  echo "${GREEN}Top PTR Providers${DEF}"
+  print_top_ptr_providers "$source_file" 10
 
   echo
   echo "${GREEN}Top URLs${DEF}"
@@ -632,27 +1029,37 @@ print_insights_from_file() {
 
   bot_hits=$(awk -F'"' '$6 ~ /bot|crawl|spider/i {c++} END {print c+0}' "$source_file")
   bot_pct=$(awk -v b="$bot_hits" -v t="$total_requests" 'BEGIN {if (t>0) printf "%.2f", (b*100/t); else print "0.00"}')
+  bots_tmp=$(mktemp)
+  referrers_tmp=$(mktemp)
+  top4xx_tmp=$(mktemp)
+  top5xx_tmp=$(mktemp)
+  cleanup_files+=("$bots_tmp" "$referrers_tmp" "$top4xx_tmp" "$top5xx_tmp")
+
+  awk -F'"' '$6 ~ /bot|crawl|spider/i {print $6}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10 {sub(/^[[:space:]]+/, "", $0); count=$1; $1=""; sub(/^[[:space:]]+/, "", $0); printf "%s\t%s\n", count, $0}' > "$bots_tmp"
+  awk -F'"' '{print $4}' "$source_file" | grep -v '^-$' | sort | uniq -c | sort -rh | awk 'NR<=10 {sub(/^[[:space:]]+/, "", $0); count=$1; $1=""; sub(/^[[:space:]]+/, "", $0); printf "%s\t%s\n", count, $0}' > "$referrers_tmp"
+  awk '$9 ~ /^4/ {print $7}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10 {sub(/^[[:space:]]+/, "", $0); count=$1; $1=""; sub(/^[[:space:]]+/, "", $0); printf "%s\t%s\n", count, $0}' > "$top4xx_tmp"
+  awk '$9 ~ /^5/ {print $7}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10 {sub(/^[[:space:]]+/, "", $0); count=$1; $1=""; sub(/^[[:space:]]+/, "", $0); printf "%s\t%s\n", count, $0}' > "$top5xx_tmp"
 
   echo
   echo "${GREEN}Bots${DEF}"
   echo "Bot requests: $bot_hits ($bot_pct%)"
-  awk -F'"' '$6 ~ /bot|crawl|spider/i {print $6}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10'
+  print_counted_table_from_file "$bots_tmp" 10 "User Agent" 110
 
   echo
   echo "${GREEN}Top Referrers${DEF}"
-  awk -F'"' '{print $4}' "$source_file" | grep -v '^-$' | sort | uniq -c | sort -rh | awk 'NR<=10'
+  print_counted_table_from_file "$referrers_tmp" 10 "Referrer" 110
 
   echo
   echo "${GREEN}Top 4xx URLs${DEF}"
-  awk '$9 ~ /^4/ {print $7}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10'
+  print_counted_table_from_file "$top4xx_tmp" 10 "URL" 110
 
   echo
   echo "${GREEN}Top 5xx URLs${DEF}"
-  awk '$9 ~ /^5/ {print $7}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10'
+  print_counted_table_from_file "$top5xx_tmp" 10 "URL" 110
 
   echo
   echo "${GREEN}Top Error IP/Status Pairs${DEF}"
-  awk '$9 ~ /^[45]/ {print $1, $9}' "$source_file" | sort | uniq -c | sort -rh | awk 'NR<=10' | colorize_status_last_field
+  print_error_ip_status_pairs_with_hosts "$source_file" 10 | colorize_status_last_field
 
   echo
   echo "${GREEN}Peak Minute Burst${DEF}"
@@ -901,10 +1308,16 @@ for base in "${BASE_LOGS[@]}"; do
   echo "${RED}Domain: $domain${DEF}"
   echo "Requests: $total | Unique IPs: $unique_ips"
 
-  echo "Top IPs"
-  awk '{print $1}' "$domain_tmp" | sort | uniq -c | sort -rh | awk 'NR<=10'
+  echo "${GREEN}Top IPs${DEF}"
+  print_top_ips_with_hosts "$domain_tmp" 10
 
-  echo "Status codes"
+  echo "${GREEN}Top PTR Hosts${DEF}"
+  print_top_ptr_hosts "$domain_tmp" 10
+
+  echo "${GREEN}Top PTR Providers${DEF}"
+  print_top_ptr_providers "$domain_tmp" 10
+
+  echo "${GREEN}Status codes${DEF}"
   print_status_with_percent "$domain_tmp" "$total"
   echo
 
