@@ -6,8 +6,10 @@ import json
 import os
 import re
 import socket
+import sys
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 try:
     import tldextract
@@ -19,6 +21,26 @@ LOG_RE = re.compile(
     r'^(?P<ip>\S+) \S+ \S+ \[(?P<time>[^\]]+)\] "(?P<request>[^"]*)" '
     r'(?P<status>\d{3}|-) (?P<size>\S+) "(?P<referrer>[^"]*)" "(?P<ua>[^"]*)"'
 )
+APACHE_TIME_RE = re.compile(
+    r"^(?P<day>\d{1,2})/(?P<mon>[A-Z][a-z]{2})/(?P<year>\d{4}):"
+    r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
+    r"(?: (?P<tz>[+-]\d{4}))?$"
+)
+BOT_RE = re.compile(r"bot|crawl|spider", re.I)
+MONTHS = {
+    "Jan": 1,
+    "Feb": 2,
+    "Mar": 3,
+    "Apr": 4,
+    "May": 5,
+    "Jun": 6,
+    "Jul": 7,
+    "Aug": 8,
+    "Sep": 9,
+    "Oct": 10,
+    "Nov": 11,
+    "Dec": 12,
+}
 
 PTR_CACHE = {}
 ORG_CACHE = {}
@@ -63,37 +85,153 @@ def colorize_status(status):
     return status
 
 
-def parse_records(path):
-    records = []
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            line = line.rstrip("\n")
-            match = LOG_RE.match(line)
-            if not match:
-                continue
+def iter_lines(path):
+    if path:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                yield line
+        return
 
-            request_parts = match.group("request").split()
-            method = request_parts[0] if len(request_parts) >= 1 else "-"
-            url = request_parts[1] if len(request_parts) >= 2 else "-"
-            size_raw = match.group("size")
-            try:
-                size = int(size_raw)
-            except ValueError:
-                size = 0
+    for line in sys.stdin:
+        yield line
 
-            records.append(
-                {
-                    "ip": match.group("ip"),
-                    "status": match.group("status"),
-                    "url": url,
-                    "method": method,
-                    "bytes": size,
-                    "referrer": match.group("referrer"),
-                    "ua": match.group("ua"),
-                    "time": match.group("time"),
-                }
-            )
-    return records
+
+def parse_apache_epoch(time_value):
+    match = APACHE_TIME_RE.match(time_value)
+    if not match:
+        return None
+
+    month = MONTHS.get(match.group("mon"))
+    if not month:
+        return None
+
+    tz_raw = match.group("tz") or "+0000"
+    sign = -1 if tz_raw.startswith("-") else 1
+    tz_offset = timedelta(
+        hours=int(tz_raw[1:3]),
+        minutes=int(tz_raw[3:5]),
+    )
+    tzinfo = timezone(sign * tz_offset)
+
+    try:
+        timestamp = datetime(
+            int(match.group("year")),
+            month,
+            int(match.group("day")),
+            int(match.group("hour")),
+            int(match.group("minute")),
+            int(match.group("second")),
+            tzinfo=tzinfo,
+        )
+    except ValueError:
+        return None
+
+    return int(timestamp.timestamp())
+
+
+def parse_log_line(line):
+    line = line.rstrip("\n")
+    match = LOG_RE.match(line)
+    if not match:
+        return None
+
+    request_parts = match.group("request").split()
+    method = request_parts[0] if len(request_parts) >= 1 else "-"
+    url = request_parts[1] if len(request_parts) >= 2 else "-"
+    size_raw = match.group("size")
+    try:
+        size = int(size_raw)
+    except ValueError:
+        size = 0
+
+    time_value = match.group("time")
+    return {
+        "epoch": parse_apache_epoch(time_value),
+        "ip": match.group("ip"),
+        "status": match.group("status"),
+        "url": url,
+        "method": method,
+        "bytes": size,
+        "referrer": match.group("referrer"),
+        "ua": match.group("ua"),
+        "time": time_value,
+        "raw": line,
+    }
+
+
+def summarize_stream(path, cutoff_epoch):
+    summary = {
+        "total_requests": 0,
+        "total_bytes": 0,
+        "ip_counts": collections.Counter(),
+        "status_counts": collections.Counter(),
+        "url_counter": collections.Counter(),
+        "method_counter": collections.Counter(),
+        "ref_counter": collections.Counter(),
+        "top4xx": collections.Counter(),
+        "top5xx": collections.Counter(),
+        "minute_counter": collections.Counter(),
+        "bot_counter": collections.Counter(),
+        "bot_requests": 0,
+        "error_pair_counts": collections.Counter(),
+    }
+
+    for line in iter_lines(path):
+        record = parse_log_line(line)
+        if not record:
+            continue
+        if cutoff_epoch and (record["epoch"] is None or record["epoch"] < cutoff_epoch):
+            continue
+
+        summary["total_requests"] += 1
+        summary["total_bytes"] += record["bytes"]
+        summary["ip_counts"][record["ip"]] += 1
+        summary["status_counts"][record["status"]] += 1
+        summary["url_counter"][record["url"]] += 1
+        summary["method_counter"][record["method"]] += 1
+
+        if record["time"]:
+            summary["minute_counter"][record["time"][:17]] += 1
+        if record["referrer"] != "-":
+            summary["ref_counter"][record["referrer"]] += 1
+
+        status = record["status"]
+        if status.startswith("4"):
+            summary["top4xx"][record["url"]] += 1
+            summary["error_pair_counts"][(record["ip"], status)] += 1
+        elif status.startswith("5"):
+            summary["top5xx"][record["url"]] += 1
+            summary["error_pair_counts"][(record["ip"], status)] += 1
+
+        if BOT_RE.search(record["ua"]):
+            summary["bot_counter"][record["ua"]] += 1
+            summary["bot_requests"] += 1
+
+    return summary
+
+
+def print_filtered_raw(path, cutoff_epoch):
+    for line in iter_lines(path):
+        if not cutoff_epoch:
+            sys.stdout.write(line)
+            continue
+
+        record = parse_log_line(line)
+        if not record:
+            continue
+        if record["epoch"] is not None and record["epoch"] >= cutoff_epoch:
+            sys.stdout.write(line)
+
+
+def print_oldest_epoch(path):
+    oldest = 0
+    for line in iter_lines(path):
+        record = parse_log_line(line)
+        if not record or record["epoch"] is None:
+            continue
+        if oldest == 0 or record["epoch"] < oldest:
+            oldest = record["epoch"]
+    print(oldest)
 
 
 def resolve_ptr(ip):
@@ -153,13 +291,6 @@ def resolve_org(ip):
     return org
 
 
-def suffix_wildcard(host, keep_labels):
-    parts = host.split(".")
-    if len(parts) <= keep_labels:
-        return host
-    return "*." + ".".join(parts[-keep_labels:])
-
-
 def registrable_domain(host):
     if host == "-":
         return host
@@ -205,16 +336,15 @@ def print_counted_table(rows, value_label, max_len):
         print_empty()
         return
     print_bold(f"{'Count':>8}  {value_label}")
-    for count, value in rows:
+    for value, count in rows:
         value = str(value)
         if max_len > 3 and len(value) > max_len:
             value = value[: max_len - 3] + "..."
         print(f"{count:8d}  {value}")
 
 
-def print_top_ips(records):
-    counts = collections.Counter(record["ip"] for record in records)
-    rows = counts.most_common(10)
+def print_top_ips(ip_counts):
+    rows = ip_counts.most_common(10)
     print_bold(f"{'Count':>8}  {'IP':<39} {'PTR Host':<42} Org / ISP")
     for ip, count in rows:
         host = resolve_ptr(ip)
@@ -222,8 +352,7 @@ def print_top_ips(records):
         print(f"{count:8d}  {ip:<39} {host:<42} {org}")
 
 
-def print_grouped_ptr(records, mode, label):
-    ip_counts = collections.Counter(record["ip"] for record in records)
+def print_grouped_ptr(ip_counts, mode, label):
     grouped = collections.defaultdict(lambda: {"requests": 0, "ips": set()})
     for ip, count in ip_counts.items():
         host = resolve_ptr(ip)
@@ -251,27 +380,20 @@ def print_grouped_ptr(records, mode, label):
         print(f"{requests:8d}  {ips:9d}  {key}")
 
 
-def print_status_codes(records):
-    counts = collections.Counter(record["status"] for record in records)
-    rows = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+def print_status_codes(status_counts, total_requests):
+    rows = sorted(status_counts.items(), key=lambda item: (-item[1], item[0]))
     if not rows:
         print_empty()
         return
 
-    total = len(records)
     print_bold(f"{'Count':>8}  {'Percent':>7}  Status")
     for status, count in rows:
-        pct = (count * 100.0 / total) if total else 0.0
+        pct = (count * 100.0 / total_requests) if total_requests else 0.0
         print(f"{count:8d}  {pct:6.2f}%  {colorize_status(status)}")
 
 
-def print_error_pairs(records):
-    counts = collections.Counter(
-        (record["ip"], record["status"])
-        for record in records
-        if record["status"].startswith(("4", "5"))
-    )
-    rows = counts.most_common(10)
+def print_error_pairs(error_pair_counts):
+    rows = error_pair_counts.most_common(10)
     if not rows:
         print_empty()
         return
@@ -284,37 +406,19 @@ def print_error_pairs(records):
         print(f"{count:8d}  {ip:<39} {host:<40} {org:<22} {colorize_status(status)}")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input-file", required=True)
-    parser.add_argument("--heading", required=True)
-    args = parser.parse_args()
-
-    records = parse_records(args.input_file)
-    if not records:
+def run_summary(args):
+    summary = summarize_stream(args.input_file, args.cutoff_epoch)
+    total_requests = summary["total_requests"]
+    if not total_requests:
+        if args.quiet_empty:
+            return 3
         print()
         print("No data for selected timeframe")
-        return
+        return 0
 
-    total_requests = len(records)
-    unique_ips = len({record["ip"] for record in records})
-    total_bytes = sum(record["bytes"] for record in records)
-    avg_bytes = (total_bytes / total_requests) if total_requests else 0.0
-
-    bot_records = [record for record in records if re.search(
-        r"bot|crawl|spider", record["ua"], re.I)]
-    bot_counter = collections.Counter(record["ua"] for record in bot_records)
-    ref_counter = collections.Counter(
-        record["referrer"] for record in records if record["referrer"] != "-")
-    top4xx = collections.Counter(
-        record["url"] for record in records if record["status"].startswith("4"))
-    top5xx = collections.Counter(
-        record["url"] for record in records if record["status"].startswith("5"))
-    url_counter = collections.Counter(record["url"] for record in records)
-    method_counter = collections.Counter(
-        record["method"] for record in records)
-    minute_counter = collections.Counter(
-        record["time"][:17] for record in records if record["time"])
+    total_bytes = summary["total_bytes"]
+    unique_ips = len(summary["ip_counts"])
+    avg_bytes = total_bytes / total_requests if total_requests else 0.0
 
     print()
     print(f"{GREEN}{args.heading}{DEF}")
@@ -325,59 +429,86 @@ def main():
 
     print()
     print(f"{GREEN}Top IPs{DEF}")
-    print_top_ips(records)
+    print_top_ips(summary["ip_counts"])
 
     print()
     print(f"{GREEN}Top PTR Hosts{DEF}")
-    print_grouped_ptr(records, "host", "PTR Host Group")
+    print_grouped_ptr(summary["ip_counts"], "host", "PTR Host Group")
 
     print()
     print(f"{GREEN}Top PTR Providers{DEF}")
-    print_grouped_ptr(records, "provider", "PTR Provider")
+    print_grouped_ptr(summary["ip_counts"], "provider", "PTR Provider")
 
     print()
     print(f"{GREEN}Top URLs{DEF}")
-    print_counted_table(url_counter.most_common(10), "URL", 110)
+    print_counted_table(summary["url_counter"].most_common(10), "URL", 110)
 
     print()
     print(f"{GREEN}HTTP Methods{DEF}")
-    print_counted_table(method_counter.most_common(), "Method", 40)
+    print_counted_table(summary["method_counter"].most_common(), "Method", 40)
 
     print()
     print(f"{GREEN}Status Codes{DEF}")
-    print_status_codes(records)
+    print_status_codes(summary["status_counts"], total_requests)
 
     print()
     print(f"{GREEN}Bots{DEF}")
-    bot_pct = (len(bot_records) * 100.0 /
-               total_requests) if total_requests else 0.0
-    print(f"Bot requests: {len(bot_records)} ({bot_pct:.2f}%)")
-    print_counted_table(bot_counter.most_common(10), "User Agent", 110)
+    bot_pct = (summary["bot_requests"] * 100.0 / total_requests) if total_requests else 0.0
+    print(f"Bot requests: {summary['bot_requests']} ({bot_pct:.2f}%)")
+    print_counted_table(summary["bot_counter"].most_common(10), "User Agent", 110)
 
     print()
     print(f"{GREEN}Top Referrers{DEF}")
-    print_counted_table(ref_counter.most_common(10), "Referrer", 110)
+    print_counted_table(summary["ref_counter"].most_common(10), "Referrer", 110)
 
     print()
     print(f"{GREEN}Top 4xx URLs{DEF}")
-    print_counted_table(top4xx.most_common(10), "URL", 110)
+    print_counted_table(summary["top4xx"].most_common(10), "URL", 110)
 
     print()
     print(f"{GREEN}Top 5xx URLs{DEF}")
-    print_counted_table(top5xx.most_common(10), "URL", 110)
+    print_counted_table(summary["top5xx"].most_common(10), "URL", 110)
 
     print()
     print(f"{GREEN}Top Error IP/Status Pairs{DEF}")
-    print_error_pairs(records)
+    print_error_pairs(summary["error_pair_counts"])
 
     print()
     print(f"{GREEN}Peak Minute Burst{DEF}")
-    if minute_counter:
-        minute, count = max(minute_counter.items(),
-                            key=lambda item: (item[1], item[0]))
+    if summary["minute_counter"]:
+        minute, count = max(
+            summary["minute_counter"].items(),
+            key=lambda item: (item[1], item[0]),
+        )
         print(f"{minute} ({count} requests)")
     else:
         print("n/a")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=("summary", "oldest-epoch", "filter-raw"),
+        default="summary",
+    )
+    parser.add_argument("--input-file")
+    parser.add_argument("--heading")
+    parser.add_argument("--cutoff-epoch", type=int, default=0)
+    parser.add_argument("--quiet-empty", action="store_true")
+    args = parser.parse_args()
+
+    if args.mode == "summary":
+        if not args.heading:
+            parser.error("--heading is required in summary mode")
+        raise SystemExit(run_summary(args))
+
+    if args.mode == "oldest-epoch":
+        print_oldest_epoch(args.input_file)
+        return
+
+    print_filtered_raw(args.input_file, args.cutoff_epoch)
 
 
 if __name__ == "__main__":

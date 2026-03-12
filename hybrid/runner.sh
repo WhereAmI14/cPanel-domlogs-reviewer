@@ -227,6 +227,18 @@ parse_timeframe() {
   done
 }
 
+ensure_python_helper() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is not available; hybrid enrichment cannot run." >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$PY_HELPER" ]]; then
+    echo "Missing Python helper: $PY_HELPER" >&2
+    exit 1
+  fi
+}
+
 collect_base_logs() {
   local -A seen=()
   local -a files=()
@@ -281,29 +293,6 @@ collect_base_logs() {
   done < "$tmpf"
 }
 
-filter_by_time() {
-  if [[ "$USE_TIME" != true ]]; then
-    cat
-    return
-  fi
-
-  awk -v cutoff="$CUTOFF_EPOCH" '
-    function month_to_num(m) {
-      return (m=="Jan")?1:(m=="Feb")?2:(m=="Mar")?3:(m=="Apr")?4:(m=="May")?5:(m=="Jun")?6:(m=="Jul")?7:(m=="Aug")?8:(m=="Sep")?9:(m=="Oct")?10:(m=="Nov")?11:(m=="Dec")?12:0
-    }
-    {
-      ts = $4
-      gsub(/\[/, "", ts)
-      split(ts, a, /[:\/]/)
-      if (length(a) < 6) next
-      month = month_to_num(a[2])
-      if (month == 0) next
-      epoch = mktime(sprintf("%04d %02d %02d %02d %02d %02d", a[3], month, a[1], a[4], a[5], a[6]))
-      if (epoch >= cutoff) print
-    }
-  '
-}
-
 stream_base_log() {
   local base="$1"
 
@@ -322,6 +311,12 @@ stream_base_log() {
       echo "WARN: cannot read $base-ssl_log (permission denied?)" >&2
     fi
   fi
+}
+
+stream_archived_files() {
+  local -a targets=("$@")
+  [[ ${#targets[@]} -gt 0 ]] || return 0
+  gzip -cd -- "${targets[@]}" || true
 }
 
 collect_archived_logs() {
@@ -387,14 +382,17 @@ collect_archived_logs() {
 stream_archived_base_log() {
   local base="$1"
   local base_name bn f
+  local -a targets=()
   base_name=$(basename "$base")
 
   for f in "${ARCHIVE_LOGS[@]}"; do
     bn=$(basename "$f")
     if [[ "$bn" == "$base_name"-*.gz || "$bn" == "$base_name-ssl_log"-*.gz ]]; then
-      gzip -cd -- "$f" || true
+      targets+=("$f")
     fi
   done
+
+  stream_archived_files "${targets[@]}"
 }
 
 stream_selected_base_log() {
@@ -406,22 +404,7 @@ stream_selected_base_log() {
 }
 
 oldest_epoch_from_stream() {
-  awk '
-    function month_to_num(m) {
-      return (m=="Jan")?1:(m=="Feb")?2:(m=="Mar")?3:(m=="Apr")?4:(m=="May")?5:(m=="Jun")?6:(m=="Jul")?7:(m=="Aug")?8:(m=="Sep")?9:(m=="Oct")?10:(m=="Nov")?11:(m=="Dec")?12:0
-    }
-    {
-      ts = $4
-      gsub(/\[/, "", ts)
-      split(ts, a, /[:\/]/)
-      if (length(a) < 6) next
-      month = month_to_num(a[2])
-      if (month == 0) next
-      epoch = mktime(sprintf("%04d %02d %02d %02d %02d %02d", a[3], month, a[1], a[4], a[5], a[6]))
-      if (epoch > 0 && (min == 0 || epoch < min)) min = epoch
-    }
-    END { print (min > 0 ? min : 0) }
-  '
+  python3 "$PY_HELPER" --mode oldest-epoch
 }
 
 seconds_to_human_duration() {
@@ -441,6 +424,22 @@ seconds_to_human_duration() {
   else
     printf '%sm' "$m"
   fi
+}
+
+print_python_summary_from_stream() {
+  local heading="$1"
+  shift
+  python3 "$PY_HELPER" \
+    --mode summary \
+    --heading "$heading" \
+    --cutoff-epoch "$CUTOFF_EPOCH" \
+    "$@"
+}
+
+print_filtered_raw_from_stream() {
+  python3 "$PY_HELPER" \
+    --mode filter-raw \
+    --cutoff-epoch "$CUTOFF_EPOCH"
 }
 
 configure_main_data_sources() {
@@ -506,32 +505,15 @@ configure_main_data_sources() {
   fi
 }
 
-print_python_summary_from_file() {
-  local source_file="$1"
-  local heading="$2"
-
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 is not available; hybrid enrichment cannot run." >&2
-    return 1
-  fi
-
-  if [[ ! -f "$PY_HELPER" ]]; then
-    echo "Missing Python helper: $PY_HELPER" >&2
-    return 1
-  fi
-
-  python3 "$PY_HELPER" --input-file "$source_file" --heading "$heading"
-}
-
 review_archived_logs() {
   local run_archive date_choice raw_domain base_input match_count show_raw archive_heading
   local f bn domain tmpf
   local -a scope_matches=()
   local -a matched_periods=()
   local -a available_domains=()
+  local -a archive_targets=()
   local -A seen_periods=()
   local -A seen_domains=()
-  local archive_tmp
 
   if [[ ${#ARCHIVE_LOGS[@]} -eq 0 ]]; then
     return 0
@@ -621,28 +603,23 @@ review_archived_logs() {
   fi
   raw_domain="${raw_domain//[[:space:]]/}"
 
-  archive_tmp=$(mktemp)
-  cleanup_files+=("$archive_tmp")
-
   if [[ -z "$raw_domain" ]]; then
+    archive_targets=("${scope_matches[@]}")
     if [[ -n "$date_choice" ]]; then
       archive_heading="Archived summary ($date_choice, all domains)"
     else
       archive_heading="Archived summary (all dates, all domains)"
     fi
-    {
-      for f in "${scope_matches[@]}"; do
-        gzip -cd -- "$f" || true
-      done
-    } | filter_by_time > "$archive_tmp"
   else
     base_input="${raw_domain%-ssl_log}"
     match_count=0
     matched_periods=()
+    archive_targets=()
     for f in "${scope_matches[@]}"; do
       bn=$(basename "$f")
       if [[ "$bn" == "$base_input"-*.gz || "$bn" == "$base_input-ssl_log"-*.gz ]]; then
         match_count=$((match_count + 1))
+        archive_targets+=("$f")
         if [[ "$bn" =~ -([A-Za-z]{3}-[0-9]{4})\.gz$ ]]; then
           if [[ -z "${seen_periods[${BASH_REMATCH[1]}]:-}" ]]; then
             seen_periods["${BASH_REMATCH[1]}"]=1
@@ -678,18 +655,9 @@ review_archived_logs() {
       fi
     done
     echo
-
-    {
-      for f in "${scope_matches[@]}"; do
-        bn=$(basename "$f")
-        if [[ "$bn" == "$base_input"-*.gz || "$bn" == "$base_input-ssl_log"-*.gz ]]; then
-          gzip -cd -- "$f" || true
-        fi
-      done
-    } | filter_by_time > "$archive_tmp"
   fi
 
-  print_python_summary_from_file "$archive_tmp" "$archive_heading"
+  stream_archived_files "${archive_targets[@]}" | print_python_summary_from_stream "$archive_heading"
 
   if ! can_read_tty; then
     return 0
@@ -715,7 +683,7 @@ review_archived_logs() {
     fi
   fi
   echo
-  cat -- "$archive_tmp"
+  stream_archived_files "${archive_targets[@]}" | print_filtered_raw_from_stream
 }
 
 main() {
@@ -725,12 +693,7 @@ main() {
   echo "Purpose: Summarize per-domain Apache access logs with Bash orchestration and external Python enrichment."
   echo
 
-  if [[ "$USE_TIME" == true ]]; then
-    if ! awk 'BEGIN{mktime("2020 01 01 00 00 00"); exit 0}' >/dev/null 2>&1; then
-      echo "WARN: awk does not support mktime(); disabling time filter. Use --timeframe all for accurate results." >&2
-      USE_TIME=false
-    fi
-  fi
+  ensure_python_helper
 
   if ! collect_base_logs; then
     echo "No logs found"
@@ -748,30 +711,26 @@ main() {
   echo
 
   for base in "${BASE_LOGS[@]}"; do
-    local domain domain_tmp
+    local domain status
     domain=$(basename "$base")
-    domain_tmp=$(mktemp)
-    cleanup_files+=("$domain_tmp")
-
-    stream_selected_base_log "$base" | filter_by_time > "$domain_tmp"
-    [[ -s "$domain_tmp" ]] || continue
-
-    print_python_summary_from_file "$domain_tmp" "Domain: $domain"
-    echo
+    if stream_selected_base_log "$base" | print_python_summary_from_stream "Domain: $domain" --quiet-empty; then
+      echo
+    else
+      status=$?
+      if [[ "$status" -ne 3 ]]; then
+        return "$status"
+      fi
+    fi
   done
 
   local g
   g=$(prompt_yes_no $'\e[36mRun global insights? (y/n):\e[0m ' "$RUN_GLOBAL_INPUT")
   if [[ "$g" == "y" ]]; then
-    local tmp
-    tmp=$(mktemp)
-    cleanup_files+=("$tmp")
     {
       for base in "${BASE_LOGS[@]}"; do
         stream_selected_base_log "$base"
       done
-    } | filter_by_time > "$tmp"
-    print_python_summary_from_file "$tmp" "Summary"
+    } | print_python_summary_from_stream "Summary"
   fi
 
   local inspect_prompt s
@@ -807,7 +766,7 @@ main() {
       echo
       echo "${CYAN}Showing raw access entries for: $(basename "$selected_base")${DEF}"
       echo
-      stream_selected_base_log "$selected_base" | filter_by_time
+      stream_selected_base_log "$selected_base" | print_filtered_raw_from_stream
     fi
   fi
 
