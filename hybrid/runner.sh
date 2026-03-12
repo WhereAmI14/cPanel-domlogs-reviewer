@@ -600,7 +600,7 @@ main() {
   parse_timeframe
 
   echo "${GREEN}Access log reviewer hybrid${DEF}"
-  echo "Purpose: Summarize per-domain Apache access logs with Bash orchestration and external Python enrichment."
+  echo "Purpose: Summarize per-domain Apache access logs. The script also checks for archived rotated logs in ~/logs and includes them if they help cover the requested timeframe."
   echo
 
   ensure_python_helper
