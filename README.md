@@ -142,13 +142,7 @@ Output stays plain text when piped or redirected.
 - Reverse DNS is optional — many IPs legitimately have no PTR record
 - Public IP metadata providers may rate-limit unauthenticated traffic
 - PTR enrichment adds latency proportional to the number of unique IPs resolved
-
----
-
-## Roadmap
-
-A Python rewrite is in progress to replace the enrichment-heavy logic with a more maintainable multi-file architecture. Tracked in `PYTHON_INTEGRATION_TODO.md`.
-
+- 
 ---
 
 ## License
