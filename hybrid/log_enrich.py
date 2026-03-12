@@ -594,6 +594,140 @@ def print_error_pairs(error_pair_counts):
         print(f"{count:8d}  {ip:<39} {host:<40} {org:<22} {colorize_status(status)}")
 
 
+def summary_metrics_row(summary, domain):
+    requests = summary["total_requests"]
+    unique_ips = len(summary["ip_counts"])
+    bot_requests = summary["bot_requests"]
+    top4xx = sum(summary["top4xx"].values())
+    top5xx = sum(summary["top5xx"].values())
+    total_errors = top4xx + top5xx
+    bot_pct = (bot_requests * 100.0 / requests) if requests else 0.0
+    error_rate = (total_errors * 100.0 / requests) if requests else 0.0
+    return [
+        domain,
+        str(requests),
+        str(unique_ips),
+        str(bot_requests),
+        f"{bot_pct:.2f}",
+        str(top4xx),
+        str(top5xx),
+        str(total_errors),
+        f"{error_rate:.2f}",
+        str(summary["total_bytes"]),
+    ]
+
+
+def print_summary_metrics(args):
+    summary = summarize_stream(args.input_file, args.cutoff_epoch)
+    if not summary["total_requests"]:
+        return 3
+    print("\t".join(summary_metrics_row(summary, args.domain)))
+    return 0
+
+
+def load_domain_metrics(path):
+    rows = []
+    for line in iter_lines(path):
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) != 10:
+            continue
+        domain, requests, unique_ips, bot_requests, bot_pct, top4xx, top5xx, total_errors, error_rate, total_bytes = parts
+        try:
+            rows.append(
+                {
+                    "domain": domain,
+                    "requests": int(requests),
+                    "unique_ips": int(unique_ips),
+                    "bot_requests": int(bot_requests),
+                    "bot_pct": float(bot_pct),
+                    "top4xx": int(top4xx),
+                    "top5xx": int(top5xx),
+                    "total_errors": int(total_errors),
+                    "error_rate": float(error_rate),
+                    "total_bytes": int(total_bytes),
+                }
+            )
+        except ValueError:
+            continue
+    return rows
+
+
+def print_domain_rollup_table(rows, columns):
+    if not rows:
+        print_empty()
+        return
+
+    header = "  ".join(f"{title:>{width}}" for title, _, width in columns[:-1])
+    header = f"{header}  {columns[-1][0]}"
+    print_bold(header)
+
+    for row in rows:
+        parts = []
+        for title, key, width in columns[:-1]:
+            value = row[key]
+            if isinstance(value, float):
+                parts.append(f"{value:>{width}.2f}")
+            else:
+                parts.append(f"{value:>{width}}")
+        print(f"{'  '.join(parts)}  {row[columns[-1][1]]}")
+
+
+def print_domain_rollup(args):
+    rows = load_domain_metrics(args.input_file)
+    if not rows:
+        print()
+        print("No per-domain data for selected timeframe")
+        return 0
+
+    top_n = args.top_n
+
+    print()
+    print_heading_block("Global Domain Summary")
+
+    print()
+    print(f"{GREEN}Top Domains By Requests{DEF}")
+    print_domain_rollup_table(
+        sorted(rows, key=lambda row: (-row["requests"], -row["unique_ips"], row["domain"]))[:top_n],
+        [("Count", "requests", 8), ("Unique IPs", "unique_ips", 10), ("Domain", "domain", 0)],
+    )
+
+    print()
+    print(f"{GREEN}Top Domains By Unique IPs{DEF}")
+    print_domain_rollup_table(
+        sorted(rows, key=lambda row: (-row["unique_ips"], -row["requests"], row["domain"]))[:top_n],
+        [("Unique IPs", "unique_ips", 10), ("Requests", "requests", 8), ("Domain", "domain", 0)],
+    )
+
+    print()
+    print(f"{GREEN}Top Domains By 4xx Errors{DEF}")
+    print_domain_rollup_table(
+        sorted(rows, key=lambda row: (-row["top4xx"], -row["requests"], row["domain"]))[:top_n],
+        [("4xx", "top4xx", 8), ("Requests", "requests", 8), ("Domain", "domain", 0)],
+    )
+
+    print()
+    print(f"{GREEN}Top Domains By 5xx Errors{DEF}")
+    print_domain_rollup_table(
+        sorted(rows, key=lambda row: (-row["top5xx"], -row["requests"], row["domain"]))[:top_n],
+        [("5xx", "top5xx", 8), ("Requests", "requests", 8), ("Domain", "domain", 0)],
+    )
+
+    print()
+    print(f"{GREEN}Top Domains By Bot Requests{DEF}")
+    print_domain_rollup_table(
+        sorted(rows, key=lambda row: (-row["bot_requests"], -row["bot_pct"], row["domain"]))[:top_n],
+        [("Bots", "bot_requests", 8), ("Percent", "bot_pct", 8), ("Domain", "domain", 0)],
+    )
+
+    print()
+    print(f"{GREEN}Top Domains By Error Rate{DEF}")
+    print_domain_rollup_table(
+        sorted(rows, key=lambda row: (-row["error_rate"], -row["total_errors"], row["domain"]))[:top_n],
+        [("Errors", "total_errors", 8), ("Rate", "error_rate", 8), ("Domain", "domain", 0)],
+    )
+    return 0
+
+
 def run_summary(args):
     summary = summarize_stream(args.input_file, args.cutoff_epoch)
     total_requests = summary["total_requests"]
@@ -678,6 +812,8 @@ def main():
         "--mode",
         choices=(
             "summary",
+            "summary-metrics",
+            "domain-rollup",
             "oldest-epoch",
             "filter-raw",
             "discover-base",
@@ -696,12 +832,22 @@ def main():
     parser.add_argument("--date-choice", default="")
     parser.add_argument("--raw-domain", default="")
     parser.add_argument("--base-name", default="")
+    parser.add_argument("--domain", default="")
+    parser.add_argument("--top-n", type=int, default=10)
     args = parser.parse_args()
 
     if args.mode == "summary":
         if not args.heading:
             parser.error("--heading is required in summary mode")
         raise SystemExit(run_summary(args))
+
+    if args.mode == "summary-metrics":
+        if not args.domain:
+            parser.error("--domain is required in summary-metrics mode")
+        raise SystemExit(print_summary_metrics(args))
+
+    if args.mode == "domain-rollup":
+        raise SystemExit(print_domain_rollup(args))
 
     if args.mode == "oldest-epoch":
         print_oldest_epoch(args.input_file)

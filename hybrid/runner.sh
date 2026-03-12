@@ -32,6 +32,8 @@ DOMAIN_INPUT=""
 ARCHIVE_DATE_INPUT=""
 ARCHIVE_DOMAIN_INPUT=""
 LOG_USER_INPUT=""
+MAX_DOMAINS_INLINE=20
+TOP_DOMAIN_ROWS=10
 
 declare -a BASE_LOGS=()
 declare -a ARCHIVE_LOGS=()
@@ -381,6 +383,63 @@ print_filtered_raw_from_stream() {
     --cutoff-epoch "$CUTOFF_EPOCH"
 }
 
+print_domain_rollup_from_file() {
+  local metrics_file="$1"
+  python3 "$PY_HELPER" \
+    --mode domain-rollup \
+    --input-file "$metrics_file" \
+    --top-n "$TOP_DOMAIN_ROWS"
+}
+
+build_domain_metrics() {
+  local metrics_file="$1"
+  local report_file="${2:-}"
+  local base domain filtered_tmp status
+
+  : > "$metrics_file"
+  if [[ -n "$report_file" ]]; then
+    : > "$report_file"
+  fi
+
+  for base in "${BASE_LOGS[@]}"; do
+    domain=$(basename "$base")
+    filtered_tmp=$(mktemp)
+    cleanup_files+=("$filtered_tmp")
+
+    stream_selected_base_log "$base" | print_filtered_raw_from_stream > "$filtered_tmp"
+    [[ -s "$filtered_tmp" ]] || continue
+
+    if python3 "$PY_HELPER" \
+      --mode summary-metrics \
+      --input-file "$filtered_tmp" \
+      --cutoff-epoch 0 \
+      --domain "$domain" >> "$metrics_file"; then
+      :
+    else
+      status=$?
+      if [[ "$status" -ne 3 ]]; then
+        return "$status"
+      fi
+    fi
+
+    if [[ -n "$report_file" ]]; then
+      if python3 "$PY_HELPER" \
+        --mode summary \
+        --input-file "$filtered_tmp" \
+        --cutoff-epoch 0 \
+        --heading "Domain: $domain" \
+        --quiet-empty >> "$report_file"; then
+        printf '\n' >> "$report_file"
+      else
+        status=$?
+        if [[ "$status" -ne 3 ]]; then
+          return "$status"
+        fi
+      fi
+    fi
+  done
+}
+
 configure_main_data_sources() {
   local now active_span combined_span requested_span
 
@@ -597,6 +656,10 @@ review_archived_logs() {
 }
 
 main() {
+  local compact_mode=0
+  local g inspect_prompt s
+  local metrics_file report_file status
+
   parse_timeframe
 
   echo "${GREEN}Access log reviewer hybrid${DEF}"
@@ -620,37 +683,52 @@ main() {
   echo "${CYAN}Per-domain analysis${DEF}"
   echo
 
-  for base in "${BASE_LOGS[@]}"; do
-    local domain status
-    domain=$(basename "$base")
-    if stream_selected_base_log "$base" | print_python_summary_from_stream "Domain: $domain" --quiet-empty; then
-      echo
-    else
-      status=$?
-      if [[ "$status" -ne 3 ]]; then
-        return "$status"
-      fi
-    fi
-  done
+  if [[ ${#BASE_LOGS[@]} -gt "$MAX_DOMAINS_INLINE" ]]; then
+    compact_mode=1
+    metrics_file=$(mktemp)
+    report_file="/tmp/logs-reviewer-$(date +%Y-%m-%d-%H%M%S).txt"
+    cleanup_files+=("$metrics_file")
 
-  local g
-  g=$(prompt_yes_no $'\e[36mRun global insights? (y/n):\e[0m ' "$RUN_GLOBAL_INPUT")
-  if [[ "$g" == "y" ]]; then
-    {
-      for base in "${BASE_LOGS[@]}"; do
-        stream_selected_base_log "$base"
-      done
-    } | print_python_summary_from_stream "Summary"
+    build_domain_metrics "$metrics_file" "$report_file" || return $?
+
+    echo "${RED}Compact mode enabled:${DEF} ${#BASE_LOGS[@]} domains exceeds inline threshold ${MAX_DOMAINS_INLINE}"
+    echo "${GREEN}Full report saved to:${DEF} $report_file"
+    print_domain_rollup_from_file "$metrics_file"
+    echo
+  else
+    for base in "${BASE_LOGS[@]}"; do
+      local domain
+      domain=$(basename "$base")
+      if stream_selected_base_log "$base" | print_python_summary_from_stream "Domain: $domain" --quiet-empty; then
+        echo
+      else
+        status=$?
+        if [[ "$status" -ne 3 ]]; then
+          return "$status"
+        fi
+      fi
+    done
   fi
 
-  local inspect_prompt s
+  if [[ "$compact_mode" -eq 0 ]]; then
+    g=$(prompt_yes_no $'\e[36mRun global domain summary? (y/n):\e[0m ' "$RUN_GLOBAL_INPUT")
+    if [[ "$g" == "y" ]]; then
+      if [[ -z "${metrics_file:-}" ]]; then
+        metrics_file=$(mktemp)
+        cleanup_files+=("$metrics_file")
+        build_domain_metrics "$metrics_file" || return $?
+      fi
+      print_domain_rollup_from_file "$metrics_file"
+    fi
+  fi
+
   inspect_prompt="${CYAN}Inspect raw access entries for a single domain (timeframe: ${TIMEFRAME_DISPLAY:-all})? (y/n):${DEF} "
   s=$(prompt_yes_no "$inspect_prompt" "$RUN_INSPECT_INPUT")
 
   if [[ "$s" == "y" ]]; then
     local dlog base_input selected_base
     echo "Available domains:"
-    printf ' - %s\n' "${BASE_LOGS[@]##*/}"
+    printf "${CYAN} - %s${DEF}\n" "${BASE_LOGS[@]##*/}"
 
     if [[ -n "$DOMAIN_INPUT" ]]; then
       dlog="$DOMAIN_INPUT"
