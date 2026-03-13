@@ -742,22 +742,26 @@ main() {
   echo "${GREEN}Found ${#BASE_LOGS[@]} logs${DEF}"
   echo
 
+  if [[ -z "$FULL_DOMAIN_INPUT" && ${#BASE_LOGS[@]} -gt "$MAX_DOMAINS_INLINE" ]]; then
+    compact_mode=1
+    report_file="/tmp/logs-reviewer-$(date +%Y-%m-%d-%H%M%S).txt"
+    echo "${YELLOW}Compact mode will be used:${DEF} ${#BASE_LOGS[@]} logs exceeds inline threshold ${MAX_DOMAINS_INLINE}."
+    echo "The terminal will show a domain-level summary, and the full per-domain report will be saved to:"
+    echo "$report_file"
+    echo "${YELLOW}To increase the inline limit, rerun with the threshold option:${DEF} curl -fsSL ${RED}URL${DEF} | bash -s -- --threshold 50"
+    echo
+  fi
+
   echo "${CYAN}Per-domain analysis${DEF}"
   echo
 
   if [[ -n "$FULL_DOMAIN_INPUT" ]]; then
     print_selected_domain_summary "$FULL_DOMAIN_INPUT" || return $?
-  elif [[ ${#BASE_LOGS[@]} -gt "$MAX_DOMAINS_INLINE" ]]; then
-    compact_mode=1
+  elif [[ "$compact_mode" -eq 1 ]]; then
     metrics_file=$(mktemp)
-    report_file="/tmp/logs-reviewer-$(date +%Y-%m-%d-%H%M%S).txt"
     cleanup_files+=("$metrics_file")
 
     build_domain_metrics "$metrics_file" "$report_file" || return $?
-
-    echo "${RED}Compact mode enabled:${DEF} ${#BASE_LOGS[@]} domains exceeds inline threshold ${MAX_DOMAINS_INLINE}"
-    echo "${YELLOW}To increase the inline limit, rerun with the threshold option:${DEF} curl -fsSL URL | bash -s -- --threshold 50"
-    echo "${GREEN}Full report saved to:${DEF} $report_file"
     print_domain_rollup_from_file "$metrics_file"
     echo
   else
