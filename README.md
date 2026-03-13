@@ -6,7 +6,7 @@ The main version now lives in the repository root. The recommended entrypoint is
 
 ## Repository Layout
 
-- `logs-reviewer-hybrid.sh`: bootstrap entrypoint for local and remote execution
+- `logs-reviewer.sh`: bootstrap entrypoint for local and remote execution
 - `runner.sh`: Bash orchestration layer for prompts, source selection, and output flow
 - `log_enrich.py`: Python analysis engine for parsing, summarization, and enrichment
 - `bash-variant/logs-reviewer.sh`: original Bash-only implementation kept as a fallback variant
@@ -29,13 +29,13 @@ The main version now lives in the repository root. The recommended entrypoint is
 Run the tool directly from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | bash
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | bash
 ```
 
 To pass options to the downloaded script, use `bash -s --`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | \
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | \
   bash -s -- -t "24 hours" -g y -i n
 ```
 
@@ -44,13 +44,13 @@ curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-review
 Run from the repository root:
 
 ```bash
-bash logs-reviewer-hybrid.sh
+bash logs-reviewer.sh
 ```
 
 Example with options:
 
 ```bash
-bash logs-reviewer-hybrid.sh --threshold 50 -t "24 hours" -g y -i n
+bash logs-reviewer.sh --threshold 50 -t "24 hours" -g y -i n
 ```
 
 ## Common Examples
@@ -58,28 +58,28 @@ bash logs-reviewer-hybrid.sh --threshold 50 -t "24 hours" -g y -i n
 Review the last 24 hours without interactive prompts:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | \
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | \
   bash -s -- -t "24 hours" -g y -i n
 ```
 
 Print the full summary for one domain only:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | \
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | \
   bash -s -- -t "24 hours" --full-domain build.whyicantuse.info -g n -i n
 ```
 
 Inspect raw access entries for a single live domain:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | \
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | \
   bash -s -- -t "24 hours" -i y -d build.whyicantuse.info
 ```
 
 Increase the inline-domain limit before compact mode starts:
 
 ```bash
-bash logs-reviewer-hybrid.sh --threshold 50
+bash logs-reviewer.sh --threshold 50
 ```
 
 ## Options

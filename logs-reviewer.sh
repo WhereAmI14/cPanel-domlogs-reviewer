@@ -16,10 +16,10 @@ usage() {
   cat <<'EOF'
 Usage:
   Local repo execution:
-    bash logs-reviewer-hybrid.sh [runner options]
+    bash logs-reviewer.sh [runner options]
 
   Remote bootstrap execution:
-    curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | bash
 
 Bootstrap options:
   --base-url URL   Override the download base URL for runner.sh and log_enrich.py

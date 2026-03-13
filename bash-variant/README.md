@@ -4,7 +4,7 @@ This directory contains the original Bash-only version of `cPanel Access Log Rev
 
 The root-level tool is the recommended version for normal use:
 
-- `../logs-reviewer-hybrid.sh`
+- `../logs-reviewer.sh`
 - `../runner.sh`
 - `../log_enrich.py`
 
