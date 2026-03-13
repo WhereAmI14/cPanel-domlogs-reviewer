@@ -41,6 +41,12 @@ Missing enrichment sources display `-` rather than failing the whole run.
 
 ## Usage
 
+Run the tool directly from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/main/bash-variant/logs-reviewer.sh | bash
+```
+
 Run it from the repository root:
 
 ```bash
@@ -88,3 +94,6 @@ bash bash-variant/logs-reviewer.sh -a y --archive-date Feb-2026 --archive-domain
 - This variant is kept for compatibility and fallback use.
 - The root-level tool is the primary maintained version.
 - An IP may have a valid Org but no PTR record, or the reverse; both are handled independently.
+
+##
+This variant of the tool might not include some of the features of the main version!

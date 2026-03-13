@@ -29,19 +29,18 @@ The main version now lives in the repository root. The recommended entrypoint is
 Run the tool directly from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | bash
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/main/logs-reviewer.sh | bash
 ```
 
 To pass options to the downloaded script, use `bash -s --`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | \
-  bash -s -- -t "24 hours" -g y -i n
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/main/logs-reviewer.sh | bash -s -- -t "24 hours" -g y -i n
 ```
 
 ## Local Usage
 
-Run from the repository root:
+You can also clone the repo and run it locally on the server as:
 
 ```bash
 bash logs-reviewer.sh
@@ -58,22 +57,22 @@ bash logs-reviewer.sh --threshold 50 -t "24 hours" -g y -i n
 Review the last 24 hours without interactive prompts:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | \
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/main/logs-reviewer.sh | \
   bash -s -- -t "24 hours" -g y -i n
 ```
 
 Print the full summary for one domain only:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | \
-  bash -s -- -t "24 hours" --full-domain build.whyicantuse.info -g n -i n
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/main/logs-reviewer.sh | \
+  bash -s -- -t "24 hours" --full-domain example.com -g n -i n
 ```
 
 Inspect raw access entries for a single live domain:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer.sh | \
-  bash -s -- -t "24 hours" -i y -d build.whyicantuse.info
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/main/logs-reviewer.sh | \
+  bash -s -- -t "24 hours" -i y -d example.com
 ```
 
 Increase the inline-domain limit before compact mode starts:
@@ -110,7 +109,7 @@ If the number of discovered domains is at or below the configured threshold:
 If the number of discovered domains exceeds the configured threshold:
 
 - the terminal shows a domain-level rollup instead of every full summary inline
-- the complete per-domain report is written to `/tmp/logs-reviewer-YYYY-MM-DD-HHMMSS.txt`
+- the complete per-domain report is written to `~/tmp/logs-reviewer-YYYY-MM-DD-HHMMSS.txt`
 - `--full-domain` bypasses the rollup view and prints only the selected domain summary
 
 ## Requirements
@@ -122,6 +121,19 @@ If the number of discovered domains exceeds the configured threshold:
 The Python helper is standard-library first and does not require extra packages.
 
 If `tldextract` is already installed on the server, it will be used automatically for more accurate registrable-domain grouping in PTR host summaries.
+
+## CI Checks
+
+This repository uses GitHub Actions to run basic quality checks on pushes and pull requests to `dev`.
+
+Current checks include:
+
+- Python linting with `flake8`
+- shell script linting with `ShellCheck`
+- GitHub Actions workflow validation with `actionlint`
+- Bash syntax checks
+- Python syntax and CLI smoke checks across Python `3.9` through `3.12`
+- SonarQube Cloud analysis
 
 ## Bash Variant
 
