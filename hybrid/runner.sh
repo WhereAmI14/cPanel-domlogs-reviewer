@@ -32,6 +32,7 @@ DOMAIN_INPUT=""
 ARCHIVE_DATE_INPUT=""
 ARCHIVE_DOMAIN_INPUT=""
 LOG_USER_INPUT=""
+FULL_DOMAIN_INPUT=""
 MAX_DOMAINS_INLINE=20
 TOP_DOMAIN_ROWS=10
 
@@ -53,6 +54,7 @@ Options:
   -i, --inspect y|n        Inspect raw entries for a single domain
   -a, --archive y|n        Review archived rotated logs from ~/logs
       --threshold N        Inline-domain threshold before compact mode (default: 20)
+      --full-domain NAME   Print the full summary for one domain even in compact mode
       --archive-date DATE  Archive date token to inspect (example: Feb-2026)
       --archive-domain N   Domain log name for archive inspect
   -d, --domain NAME        Domain log name for inspect mode
@@ -90,6 +92,11 @@ while [[ $# -gt 0 ]]; do
       [[ $# -lt 2 ]] && { echo "Missing value for $1" >&2; exit 2; }
       [[ "$2" =~ ^[0-9]+$ ]] || { echo "Invalid value for $1: $2" >&2; exit 2; }
       MAX_DOMAINS_INLINE="$2"
+      shift 2
+      ;;
+    --full-domain)
+      [[ $# -lt 2 ]] && { echo "Missing value for $1" >&2; exit 2; }
+      FULL_DOMAIN_INPUT="$2"
       shift 2
       ;;
     --archive-date)
@@ -349,6 +356,49 @@ stream_selected_base_log() {
   if [[ "$MAIN_INCLUDE_ARCHIVES" -eq 1 ]]; then
     stream_archived_base_log "$base"
   fi
+}
+
+find_base_log() {
+  local requested="$1"
+  local base_input base
+
+  base_input="${requested//[[:space:]]/}"
+  base_input="${base_input%-ssl_log}"
+  [[ -n "$base_input" ]] || return 1
+
+  for base in "${BASE_LOGS[@]}"; do
+    if [[ "$(basename "$base")" == "$base_input" ]]; then
+      printf '%s\n' "$base"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+print_selected_domain_summary() {
+  local requested="$1"
+  local selected_base status
+
+  selected_base=$(find_base_log "$requested") || {
+    echo "No matching log found for: ${requested%-ssl_log}"
+    return 0
+  }
+
+  echo "${CYAN}Full summary for requested domain:${DEF} $(basename "$selected_base")"
+  echo
+  if stream_selected_base_log "$selected_base" | print_python_summary_from_stream "Domain: $(basename "$selected_base")" --quiet-empty; then
+    echo
+    return 0
+  fi
+
+  status=$?
+  if [[ "$status" -ne 3 ]]; then
+    return "$status"
+  fi
+
+  echo "No log entries found for: $(basename "$selected_base")"
+  echo
 }
 
 oldest_epoch_from_stream() {
@@ -665,7 +715,7 @@ review_archived_logs() {
 main() {
   local compact_mode=0
   local g inspect_prompt s
-  local metrics_file report_file status
+  local metrics_file report_file status selected_base
 
   parse_timeframe
 
@@ -703,6 +753,9 @@ main() {
     echo "${GREEN}Full report saved to:${DEF} $report_file"
     print_domain_rollup_from_file "$metrics_file"
     echo
+    if [[ -n "$FULL_DOMAIN_INPUT" ]]; then
+      print_selected_domain_summary "$FULL_DOMAIN_INPUT" || return $?
+    fi
   else
     for base in "${BASE_LOGS[@]}"; do
       local domain
@@ -716,6 +769,17 @@ main() {
         fi
       fi
     done
+
+    if [[ -n "$FULL_DOMAIN_INPUT" ]]; then
+      selected_base=$(find_base_log "$FULL_DOMAIN_INPUT") || {
+        echo "No matching log found for: ${FULL_DOMAIN_INPUT%-ssl_log}"
+        selected_base=""
+      }
+      if [[ -n "$selected_base" ]]; then
+        echo "${YELLOW}The requested domain is already included in the inline output:${DEF} $(basename "$selected_base")"
+        echo
+      fi
+    fi
   fi
 
   if [[ "$compact_mode" -eq 0 ]]; then
@@ -734,30 +798,22 @@ main() {
   s=$(prompt_yes_no "$inspect_prompt" "$RUN_INSPECT_INPUT")
 
   if [[ "$s" == "y" ]]; then
-    local dlog base_input selected_base
+    local dlog selected_base
     echo "Available domains:"
     printf "${CYAN} - %s${DEF}\n" "${BASE_LOGS[@]##*/}"
 
     if [[ -n "$DOMAIN_INPUT" ]]; then
       dlog="$DOMAIN_INPUT"
     else
-      dlog=$(read_tty "Enter domain log name (e.g. example.com or example.com-ssl_log): ") || {
+      dlog=$(read_tty "Enter domain log name (it will review both the non-SSL and SSL logs): ") || {
         echo "Non-interactive inspect mode requires --domain" >&2
         exit 2
       }
     fi
 
-    base_input="${dlog%-ssl_log}"
-    selected_base=""
-    for base in "${BASE_LOGS[@]}"; do
-      if [[ "$(basename "$base")" == "$base_input" ]]; then
-        selected_base="$base"
-        break
-      fi
-    done
-
+    selected_base=$(find_base_log "$dlog") || selected_base=""
     if [[ -z "$selected_base" ]]; then
-      echo "No matching log found for: $base_input"
+      echo "No matching log found for: ${dlog%-ssl_log}"
     else
       echo
       echo "${CYAN}Showing raw access entries for: $(basename "$selected_base")${DEF}"

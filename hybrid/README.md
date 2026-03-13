@@ -102,22 +102,27 @@ With options:
 bash hybrid/logs-reviewer-hybrid.sh --threshold 50 -t "24 hours" -g y -i n
 ```
 
+Target one domain for a full summary during compact mode:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-domlogs-reviewer/dev/hybrid/logs-reviewer-hybrid.sh | \
+  bash -s -- -t "24 hours" --full-domain build.whyicantuse.info -g n -i n
+```
+
 ## Important Options
 
 `runner.sh` currently supports:
 
-- `-t`, `--timeframe`
-- `-g`, `--global`
-- `-i`, `--inspect`
-- `-a`, `--archive`
-- `--archive-date`
-- `--archive-domain`
-- `-d`, `--domain`
-- `-u`, `--user`
-- `--threshold`
-- `--threshhold`
-
-`--threshold` controls when compact mode starts.
+- `-t`, `--timeframe`: limit analysis to a window such as `"5 minutes"`, `"24 hours"`, or `"all"`.
+- `-g`, `--global`: answer the global rollup prompt non-interactively with `y` or `n`.
+- `-i`, `--inspect`: answer the raw-entry inspection prompt non-interactively with `y` or `n`.
+- `-a`, `--archive`: answer the archived-log review prompt non-interactively with `y` or `n`.
+- `--full-domain`: print the complete summary block for one domain even when compact mode is active.
+- `--archive-date`: choose a specific archive period token such as `Feb-2026`.
+- `--archive-domain`: choose one archived domain log name for archive inspection.
+- `-d`, `--domain`: choose one live domain log name for raw inspect mode.
+- `-u`, `--user`: as root, limit discovery to one cPanel user instead of scanning all users.
+- `--threshold`: control when compact mode starts by setting the max number of inline domain summaries.
 
 Example:
 
