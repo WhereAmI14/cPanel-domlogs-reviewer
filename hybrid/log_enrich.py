@@ -460,6 +460,15 @@ def http_json(url):
         return None
 
 
+def normalize_org(value):
+    if not isinstance(value, str):
+        return "-"
+    value = value.strip()
+    if value in ("", "-", "null", "None"):
+        return "-"
+    return re.sub(r"^AS\d+\s+", "", value)
+
+
 def resolve_org(ip):
     token = os.environ.get("IPINFO_TOKEN", "")
     if ip in ORG_CACHE:
@@ -472,14 +481,26 @@ def resolve_org(ip):
 
     data = http_json(ipinfo_url)
     if isinstance(data, dict):
-        org = data.get("org") or "-"
-        org = re.sub(r"^AS\d+\s+", "", org)
+        org = normalize_org(data.get("org"))
 
     if org in ("", "-", None, "null"):
         data = http_json(f"https://ipwho.is/{urllib.parse.quote(ip)}")
         if isinstance(data, dict):
             connection = data.get("connection") or {}
-            org = connection.get("org") or connection.get("isp") or "-"
+            org = normalize_org(
+                connection.get("org")
+                or connection.get("isp")
+                or data.get("org")
+            )
+
+    if org in ("", "-", None, "null"):
+        data = http_json(f"https://ipapi.co/{urllib.parse.quote(ip)}/json/")
+        if isinstance(data, dict):
+            org = normalize_org(
+                data.get("org")
+                or data.get("asn")
+                or data.get("company")
+            )
 
     if org in ("", None, "null"):
         org = "-"

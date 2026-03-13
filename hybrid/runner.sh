@@ -715,12 +715,17 @@ review_archived_logs() {
 main() {
   local compact_mode=0
   local g inspect_prompt s
-  local metrics_file report_file status selected_base
+  local metrics_file report_file status
 
   parse_timeframe
 
-  echo "${GREEN}Access log reviewer hybrid${DEF}"
-  echo "Purpose: Summarize per-domain Apache access logs. The script also checks for archived rotated logs in ~/logs and includes them if they help cover the requested timeframe."
+  if [[ -n "$FULL_DOMAIN_INPUT" ]]; then
+    RUN_INSPECT_INPUT="${RUN_INSPECT_INPUT:-n}"
+    RUN_ARCHIVE_INPUT="${RUN_ARCHIVE_INPUT:-n}"
+  fi
+
+  echo "${GREEN}cPanel Access Log Reviewer${DEF}"
+  echo "Purpose: Summarize per-domain Apache access logs, with archive support when the requested timeframe exceeds active-log coverage."
   echo
 
   ensure_python_helper
@@ -740,7 +745,9 @@ main() {
   echo "${CYAN}Per-domain analysis${DEF}"
   echo
 
-  if [[ ${#BASE_LOGS[@]} -gt "$MAX_DOMAINS_INLINE" ]]; then
+  if [[ -n "$FULL_DOMAIN_INPUT" ]]; then
+    print_selected_domain_summary "$FULL_DOMAIN_INPUT" || return $?
+  elif [[ ${#BASE_LOGS[@]} -gt "$MAX_DOMAINS_INLINE" ]]; then
     compact_mode=1
     metrics_file=$(mktemp)
     report_file="/tmp/logs-reviewer-$(date +%Y-%m-%d-%H%M%S).txt"
@@ -753,9 +760,6 @@ main() {
     echo "${GREEN}Full report saved to:${DEF} $report_file"
     print_domain_rollup_from_file "$metrics_file"
     echo
-    if [[ -n "$FULL_DOMAIN_INPUT" ]]; then
-      print_selected_domain_summary "$FULL_DOMAIN_INPUT" || return $?
-    fi
   else
     for base in "${BASE_LOGS[@]}"; do
       local domain
@@ -769,20 +773,9 @@ main() {
         fi
       fi
     done
-
-    if [[ -n "$FULL_DOMAIN_INPUT" ]]; then
-      selected_base=$(find_base_log "$FULL_DOMAIN_INPUT") || {
-        echo "No matching log found for: ${FULL_DOMAIN_INPUT%-ssl_log}"
-        selected_base=""
-      }
-      if [[ -n "$selected_base" ]]; then
-        echo "${YELLOW}The requested domain is already included in the inline output:${DEF} $(basename "$selected_base")"
-        echo
-      fi
-    fi
   fi
 
-  if [[ "$compact_mode" -eq 0 ]]; then
+  if [[ -z "$FULL_DOMAIN_INPUT" && "$compact_mode" -eq 0 ]]; then
     g=$(prompt_yes_no $'\e[36mRun global domain summary? (y/n):\e[0m ' "$RUN_GLOBAL_INPUT")
     if [[ "$g" == "y" ]]; then
       if [[ -z "${metrics_file:-}" ]]; then
