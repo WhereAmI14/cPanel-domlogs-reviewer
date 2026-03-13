@@ -1,0 +1,63 @@
+name: Syntax Check
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  syntax:
+    name: Bash and Python syntax (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version:
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Check Bash syntax
+        shell: bash
+        run: |
+          mapfile -t shell_files < <(git ls-files '*.sh')
+          if [ "${#shell_files[@]}" -eq 0 ]; then
+            echo "No shell scripts found."
+          else
+            bash -n "${shell_files[@]}"
+          fi
+
+      - name: Check Python syntax
+        shell: bash
+        run: |
+          mapfile -t python_files < <(git ls-files '*.py')
+          if [ "${#python_files[@]}" -eq 0 ]; then
+            echo "No Python files found."
+          else
+            python -m py_compile "${python_files[@]}"
+          fi
+
+      - name: Run Python CLI smoke checks
+        shell: bash
+        run: |
+          python log_enrich.py --help > /dev/null
