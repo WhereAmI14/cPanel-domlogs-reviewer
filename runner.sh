@@ -14,6 +14,8 @@ GREEN=$'\033[32;1m'
 YELLOW=$'\033[33;1m'
 BLUE=$'\033[34;1m'
 DEF=$'\033[0m'
+BOLD=$'\033[1m'
+
 
 ME=$(whoami)
 USE_TIME=false
@@ -745,7 +747,7 @@ main() {
   if [[ -z "$FULL_DOMAIN_INPUT" && ${#BASE_LOGS[@]} -gt "$MAX_DOMAINS_INLINE" ]]; then
     compact_mode=1
     report_file="/tmp/logs-reviewer-$(date +%Y-%m-%d-%H%M%S).txt"
-    echo "${YELLOW}Compact mode will be used:${DEF} ${#BASE_LOGS[@]} logs exceeds inline threshold ${MAX_DOMAINS_INLINE}."
+    echo "${YELLOW}Compact mode will be used:${DEF} ${BOLD}${#BASE_LOGS[@]}${DEF} logs exceeds inline threshold ${BOLD}${MAX_DOMAINS_INLINE}${DEF}."
     echo "The terminal will show a domain-level summary, and the full per-domain report will be saved to:"
     echo "$report_file"
     echo "${YELLOW}To increase the inline limit, rerun with the threshold option:${DEF} curl -fsSL ${RED}URL${DEF} | bash -s -- --threshold 50"
