@@ -1,0 +1,35 @@
+name: SonarCloud Analysis
+
+on:
+    push:
+        branches:
+            - dev
+    pull_request:
+        branches:
+            - dev
+
+jobs:
+    sonarcloud:
+        name: Run SonarCloud Scan
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0 # Required by SonarCloud for full blame/history analysis
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Install dependencies
+              run: |
+                  pip install -r requirements.txt || true   # Soft fail if no requirements.txt yet
+
+            - name: SonarCloud Scan
+              uses: SonarSource/sonarcloud-github-action@master
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Auto-provided by GitHub, no setup needed
+                  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }} # You will create this — see setup instructions

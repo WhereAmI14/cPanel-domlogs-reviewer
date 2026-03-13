@@ -1,0 +1,38 @@
+name: Python Lint (flake8)
+
+on:
+    push:
+        branches:
+            - dev
+    pull_request:
+        branches:
+            - dev
+
+jobs:
+    flake8:
+        name: Run flake8 (Python ${{ matrix.python-version }})
+        runs-on: ubuntu-latest
+        # Using the matrix strategy to test against multiple Python versions
+        strategy:
+            matrix:
+                python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set up Python ${{ matrix.python-version }}
+              uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ matrix.python-version }}
+
+            - name: Install flake8
+              run: pip install flake8
+
+            - name: Run flake8
+              run: |
+                  flake8 . \
+                    --max-line-length=120 \
+                    --exclude=.git,__pycache__,.venv \
+                    --statistics \
+                    --count
