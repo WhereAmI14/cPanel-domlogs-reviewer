@@ -128,7 +128,7 @@ This repository uses GitHub Actions to run basic quality checks on pushes and pu
 
 Current checks include:
 
-- Python linting with `flake8`
+- Python linting with `ruff`
 - shell script linting with `ShellCheck`
 - GitHub Actions workflow validation with `actionlint`
 - Bash syntax checks
