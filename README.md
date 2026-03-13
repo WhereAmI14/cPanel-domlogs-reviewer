@@ -124,7 +124,7 @@ If `tldextract` is already installed on the server, it will be used automaticall
 
 ## CI Checks
 
-This repository uses GitHub Actions to run basic quality checks on pushes and pull requests to `dev`.
+This repository uses GitHub Actions to run quality checks on pushes to `dev` and on pull requests targeting `dev` or `main`.
 
 Current checks include:
 
