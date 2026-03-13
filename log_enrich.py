@@ -452,7 +452,7 @@ def resolve_ptr(ip):
 def http_json(url):
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "logs-reviewer-hybrid/1.0"},
+        headers={"User-Agent": "cpanel-access-log-reviewer/1.0"},
     )
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:

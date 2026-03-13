@@ -1,100 +1,134 @@
-# cPanel Apache Log Analyzer
+# cPanel Access Log Reviewer
 
-A CLI tool for analyzing Apache access logs on cPanel servers. Supports interactive and non-interactive use, time-range filtering, bot detection, peak burst analysis, and archived rotated log review.
+`cPanel Access Log Reviewer` is a command-line tool for analyzing Apache access logs on cPanel servers. It produces per-domain summaries, highlights suspicious or noisy traffic patterns, and supports both active logs and rotated archive logs.
 
-Built for real operational use on cPanel/WHM hosting environments.
+The main version now lives in the repository root. The recommended entrypoint is the root-level bootstrap script, which stages `runner.sh` and `log_enrich.py` in a temporary directory and executes the tool without leaving an installed copy behind.
 
----
+## Repository Layout
+
+- `logs-reviewer-hybrid.sh`: bootstrap entrypoint for local and remote execution
+- `runner.sh`: Bash orchestration layer for prompts, source selection, and output flow
+- `log_enrich.py`: Python analysis engine for parsing, summarization, and enrichment
+- `bash-variant/logs-reviewer.sh`: original Bash-only implementation kept as a fallback variant
 
 ## Features
 
-- **Time filtering** - analyze the last N minutes, hours, or days
-- **Per-domain breakdown** - top IPs and status codes per domain
-- **Global insights** - aggregated view across all domains
-- **Bot detection** - identifies and separates crawler/spider traffic
-- **Peak burst analysis** - finds the busiest single minute in the log
-- **Archive support** - reads rotated `.gz` logs from `~/logs`
-- **Non-interactive mode** - fully scriptable via CLI flags
-- **Color-safe output** - respects `NO_COLOR` and non-TTY environments
+- Per-domain traffic summaries
+- Top IP analysis with PTR host and Org / ISP enrichment
+- Grouped PTR-host rollups
+- Top URLs, methods, status codes, referrers, and error views
+- Bot request detection
+- Raw-entry inspection for a selected live domain
+- Archived log review from `~/logs/*.gz`
+- Automatic inclusion of rotated archives when the requested timeframe exceeds active-log coverage
+- Compact mode for servers with many domains
+- Full summary output for a single selected domain without printing every domain first
 
----
+## Quick Start
+
+Run the tool directly from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | bash
+```
+
+To pass options to the downloaded script, use `bash -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | \
+  bash -s -- -t "24 hours" -g y -i n
+```
+
+## Local Usage
+
+Run from the repository root:
+
+```bash
+bash logs-reviewer-hybrid.sh
+```
+
+Example with options:
+
+```bash
+bash logs-reviewer-hybrid.sh --threshold 50 -t "24 hours" -g y -i n
+```
+
+## Common Examples
+
+Review the last 24 hours without interactive prompts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | \
+  bash -s -- -t "24 hours" -g y -i n
+```
+
+Print the full summary for one domain only:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | \
+  bash -s -- -t "24 hours" --full-domain build.whyicantuse.info -g n -i n
+```
+
+Inspect raw access entries for a single live domain:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | \
+  bash -s -- -t "24 hours" -i y -d build.whyicantuse.info
+```
+
+Increase the inline-domain limit before compact mode starts:
+
+```bash
+bash logs-reviewer-hybrid.sh --threshold 50
+```
+
+## Options
+
+- `-t`, `--timeframe`: limit analysis to a window such as `"5 minutes"`, `"24 hours"`, or `"all"`.
+- `-g`, `--global`: answer the global rollup prompt non-interactively with `y` or `n`.
+- `-i`, `--inspect`: answer the raw-entry inspection prompt non-interactively with `y` or `n`.
+- `-a`, `--archive`: answer the archived-log review prompt non-interactively with `y` or `n`.
+- `--full-domain`: print the complete per-domain summary for a single domain and skip the full multi-domain rollup output.
+- `--archive-date`: choose a specific archive period token such as `Feb-2026`.
+- `--archive-domain`: choose one archived domain log name for archive inspection.
+- `-d`, `--domain`: choose one live domain log name for raw inspect mode.
+- `-u`, `--user`: when running as `root`, limit discovery to one cPanel user instead of scanning all users.
+- `--threshold`: set the maximum number of domains that will be printed inline before compact mode is enabled.
+- `-h`, `--help`: show usage information.
+
+## How Output Works
+
+### Normal Mode
+
+If the number of discovered domains is at or below the configured threshold:
+
+- each domain is printed with its full summary
+- an optional global domain rollup can be shown
+
+### Compact Mode
+
+If the number of discovered domains exceeds the configured threshold:
+
+- the terminal shows a domain-level rollup instead of every full summary inline
+- the complete per-domain report is written to `/tmp/logs-reviewer-YYYY-MM-DD-HHMMSS.txt`
+- `--full-domain` bypasses the rollup view and prints only the selected domain summary
 
 ## Requirements
 
-- Bash 4+
-- awk with `mktime()` support (gawk or mawk; standard on cPanel servers)
-- Access to cPanel user log directories (`/home/USER/access-logs` or `/home/USER/access_logs`)
+- `bash`
+- `python3`
+- access to cPanel Apache log files
 
----
+The Python helper is standard-library first and does not require extra packages.
 
-## Usage
+If `tldextract` is already installed on the server, it will be used automatically for more accurate registrable-domain grouping in PTR host summaries.
 
-```bash
-bash logs-reviewer.sh [OPTIONS]
-```
+## Bash Variant
 
-### Options
+The original Bash-only implementation is still available in `bash-variant/README.md`. Keep it as a fallback if you need a pure Bash version or want to compare behavior with the main root-level tool.
 
-| Flag | Description |
-|------|-------------|
-| `-t, --timeframe VALUE` | Time window: `"5 minutes"`, `"24 hours"`, `"7 days"`, or `"all"` |
-| `-g, --global y\|n` | Run global insights across all domains |
-| `-i, --inspect y\|n` | Inspect raw entries for a single domain |
-| `-a, --archive y\|n` | Review archived rotated logs from `~/logs` |
-| `--archive-date DATE` | Archive period to inspect (example: `Feb-2026`) |
-| `--archive-domain NAME` | Domain to inspect in archive mode |
-| `-d, --domain NAME` | Domain log name for inspect mode (example: `example.com`) |
-| `-u, --user USER` | Read logs from `/home/USER/access-logs` (useful when running as root) |
-| `-h, --help` | Show help |
+## Notes
 
----
-
-## Examples
-
-**Interactive — check the last 24 hours:**
-```bash
-bash logs-reviewer.sh
-# Follow the prompts
-```
-
-**Non-interactive — last 2 hours, global insights, no inspection:**
-```bash
-bash logs-reviewer.sh -t "2 hours" -g y -i n -a n
-```
-
-**As root, scoped to a specific cPanel user:**
-```bash
-bash logs-reviewer.sh -u clientusername -t "1 hour" -g y -i n -a n
-```
-
-**Review a specific archived month for one domain:**
-```bash
-bash logs-reviewer.sh -a y --archive-date Feb-2026 --archive-domain example.com
-```
-
----
-
-## Log Discovery
-
-The script automatically discovers logs from cPanel's standard path:
-
-- `/home/USER/access-logs/`
-
-Both plain log files and `-ssl_log` variants are included. Archived rotated logs (`.gz`) are read from `~/logs` using cPanel's standard `domain-Mon-YYYY.gz` naming convention.
-
----
-
-## Environment
-
-| Variable | Effect |
-|----------|--------|
-| `NO_COLOR` | Disables ANSI color output |
-| `TERM=dumb` | Automatically disables color |
-
-Output is plain text when piped or redirected.
-
----
-
-## License
-
-MIT
+- The tool reads both standard and SSL access logs for a selected domain.
+- When the requested timeframe reaches further back than the active logs cover, the tool can include matching rotated archives automatically.
+- If you are piping the bootstrap script into Bash and need to pass options, always use `bash -s -- ...`.

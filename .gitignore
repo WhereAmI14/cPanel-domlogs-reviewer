@@ -6,4 +6,3 @@
 *.swp
 *~
 __pycache__/
-*.pyc

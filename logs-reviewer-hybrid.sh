@@ -7,8 +7,8 @@ fi
 
 set -euo pipefail
 
-DEFAULT_BASE_URL="https://raw.githubusercontent.com/WhereAmI14/cPanel-domlogs-reviewer/dev/hybrid"
-BASE_URL="${HYBRID_BASE_URL:-$DEFAULT_BASE_URL}"
+DEFAULT_BASE_URL="https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev"
+BASE_URL="${LOG_REVIEWER_BASE_URL:-${HYBRID_BASE_URL:-$DEFAULT_BASE_URL}}"
 KEEP_TEMP=0
 declare -a FORWARD_ARGS=()
 
@@ -16,10 +16,10 @@ usage() {
   cat <<'EOF'
 Usage:
   Local repo execution:
-    bash hybrid/logs-reviewer-hybrid.sh [runner options]
+    bash logs-reviewer-hybrid.sh [runner options]
 
   Remote bootstrap execution:
-    curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-domlogs-reviewer/dev/hybrid/logs-reviewer-hybrid.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-access-log-reviewer/dev/logs-reviewer-hybrid.sh | bash
 
 Bootstrap options:
   --base-url URL   Override the download base URL for runner.sh and log_enrich.py
@@ -61,7 +61,7 @@ done
 TMPDIR="$(mktemp -d)"
 cleanup() {
   if [[ "$KEEP_TEMP" -eq 1 ]]; then
-    echo "Hybrid temp dir kept at: $TMPDIR" >&2
+    echo "Temporary working directory kept at: $TMPDIR" >&2
   else
     rm -rf "$TMPDIR"
   fi

@@ -62,7 +62,7 @@ Options:
   -h, --help               Show this help
 
 Notes:
-  - This is the multi-file hybrid runner.
+  - Bash orchestrator for the root-level tool bundle.
 EOF
 }
 
@@ -245,7 +245,7 @@ parse_timeframe() {
 
 ensure_python_helper() {
   if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 is not available; hybrid enrichment cannot run." >&2
+    echo "python3 is not available; log enrichment cannot run." >&2
     exit 1
   fi
 
