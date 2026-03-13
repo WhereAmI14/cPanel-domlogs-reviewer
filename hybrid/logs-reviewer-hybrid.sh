@@ -7,7 +7,8 @@ fi
 
 set -euo pipefail
 
-BASE_URL="${HYBRID_BASE_URL:-}"
+DEFAULT_BASE_URL="https://raw.githubusercontent.com/WhereAmI14/cPanel-domlogs-reviewer/dev/hybrid"
+BASE_URL="${HYBRID_BASE_URL:-$DEFAULT_BASE_URL}"
 KEEP_TEMP=0
 declare -a FORWARD_ARGS=()
 
@@ -18,11 +19,10 @@ Usage:
     bash hybrid/logs-reviewer-hybrid.sh [runner options]
 
   Remote bootstrap execution:
-    curl -fsSL https://your-url/hybrid/logs-reviewer-hybrid.sh | \
-      bash -s -- --base-url https://your-url/hybrid [runner options]
+    curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-domlogs-reviewer/dev/hybrid/logs-reviewer-hybrid.sh | bash
 
 Bootstrap options:
-  --base-url URL   Base URL used to download runner.sh and log_enrich.py
+  --base-url URL   Override the download base URL for runner.sh and log_enrich.py
   --keep-temp      Keep the temporary working directory for inspection
   -h, --help       Show this help
 
@@ -73,7 +73,7 @@ download_file() {
   local out="$2"
   curl -fsSL "$url" -o "$out"
 }
-# Try to run from local bundle if available
+
 run_local_bundle() {
   local script_path script_dir
   script_path="${BASH_SOURCE[0]:-}"
@@ -93,12 +93,6 @@ if run_local_bundle; then
   exit 0
 fi
 
-if [[ -z "$BASE_URL" ]]; then
-  echo "No local hybrid bundle found and no --base-url was provided." >&2
-  echo "Use: curl .../logs-reviewer-hybrid.sh | bash -s -- --base-url https://your-url/hybrid [options]" >&2
-  exit 2
-fi
-# No local bundle, download from BASE_URL
 download_file "$BASE_URL/runner.sh" "$TMPDIR/runner.sh"
 download_file "$BASE_URL/log_enrich.py" "$TMPDIR/log_enrich.py"
 chmod +x "$TMPDIR/runner.sh"

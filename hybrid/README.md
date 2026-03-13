@@ -1,101 +1,151 @@
-# Hybrid Multi-File Prototype
+# Hybrid Version
 
-This directory now uses a temp-directory bootstrap model instead of a single large Bash file.
+This is the multi-file hybrid version of the cPanel access-log reviewer.
+
+The goal of this version is:
+
+- keep the operator workflow simple
+- preserve the `curl | bash` style entrypoint
+- avoid leaving installed files on the server
+- move the heavy parsing and reporting logic out of Bash and into Python
+
+## What The Tool Does
+
+The hybrid tool reviews Apache/cPanel access logs and produces:
+
+- per-domain request summaries
+- PTR/host and Org/ISP enrichment for top IPs
+- grouped PTR-host summaries
+- status-code, bot, referrer, URL, and error summaries
+- raw-entry inspection for a selected domain
+- archive review from `~/logs/*.gz`
+- automatic active-plus-archive source selection when the requested timeframe exceeds active-log coverage
+
+On servers with many domains, it can switch to compact mode:
+
+- the terminal shows a domain-level summary instead of every domain inline
+- the full per-domain report is written to a file in `/tmp`
 
 ## Files
 
-- `logs-reviewer-hybrid.sh`
-  - public bootstrap entrypoint
-- `runner.sh`
-  - Bash orchestration layer
-- `log_enrich.py`
-  - Python enrichment and report rendering
+### `logs-reviewer-hybrid.sh`
 
-## Design
+Bootstrap entrypoint for the hybrid version inside this directory.
 
-Goal:
+Purpose:
 
-- keep the user-facing model close to `curl | bash`
-- avoid keeping permanent files on the server
-- split the logic into maintainable files
+- create a temporary working directory
+- copy or download the runtime files into it
+- execute the runner
+- clean up on exit
 
-How it works:
+This is the canonical bootstrap entrypoint for the hybrid version.
 
-1. the bootstrap script creates a temp directory with `mktemp -d`
-2. it copies or downloads `runner.sh` and `log_enrich.py`
-3. it executes the runner from that temp directory
-4. it removes the temp directory on exit
+### `runner.sh`
 
-## Invocation
+Bash orchestration layer.
 
-### Local repository execution
+Purpose:
+
+- parse CLI flags
+- handle interactive prompts
+- discover whether active logs and archives should be used
+- stream active and archive log data
+- coordinate compact mode
+- call the Python helper for summaries, filtering, archive metadata, and rollups
+
+This file owns the operator flow, not the heavy analytics logic.
+
+### `log_enrich.py`
+
+Python analysis and rendering engine.
+
+Purpose:
+
+- discover base logs and archive logs
+- parse Apache log lines
+- filter by cutoff time
+- compute per-domain summary metrics
+- render full summaries and domain-level rollups
+- resolve PTR hostnames
+- resolve Org/ISP metadata
+- group PTR hosts for cleaner output
+
+This file is the main logic engine for the hybrid version.
+
+## Recommended Entry Point
+
+The canonical public command is:
 
 ```bash
-bash hybrid/logs-reviewer-hybrid.sh -t "1 hour" -g y -i n
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-domlogs-reviewer/dev/hybrid/logs-reviewer-hybrid.sh | bash
 ```
 
-### Remote bootstrap execution
+To pass options to the downloaded script:
 
 ```bash
-curl -fsSL https://your-url/hybrid/logs-reviewer-hybrid.sh | \
-  bash -s -- --base-url https://your-url/hybrid -t "1 hour" -g y -i n
+curl -fsSL https://raw.githubusercontent.com/WhereAmI14/cPanel-domlogs-reviewer/dev/hybrid/logs-reviewer-hybrid.sh | \
+  bash -s -- --threshold 50 -t "24 hours" -g y -i n
 ```
 
-If you prefer, you can also export the base URL:
+## Local Usage
+
+Run from the repository root:
 
 ```bash
-HYBRID_BASE_URL="https://your-url/hybrid" \
-curl -fsSL https://your-url/hybrid/logs-reviewer-hybrid.sh | \
-  bash -s -- -t "1 hour" -g y -i n
+bash hybrid/logs-reviewer-hybrid.sh
 ```
 
-## Bootstrap Options
+With options:
 
-- `--base-url URL`
-  - remote base used to download `runner.sh` and `log_enrich.py`
-- `--keep-temp`
-  - keep the temp working directory for debugging
-- `-h`, `--help`
-  - show bootstrap help
+```bash
+bash hybrid/logs-reviewer-hybrid.sh --threshold 50 -t "24 hours" -g y -i n
+```
 
-All other arguments are forwarded to `runner.sh`.
+## Important Options
 
-## Runner Scope
+`runner.sh` currently supports:
 
-Included in this prototype:
+- `-t`, `--timeframe`
+- `-g`, `--global`
+- `-i`, `--inspect`
+- `-a`, `--archive`
+- `--archive-date`
+- `--archive-domain`
+- `-d`, `--domain`
+- `-u`, `--user`
+- `--threshold`
+- `--threshhold`
 
-- timeframe filtering
-- per-domain summaries
-- global summary
-- automatic active-plus-archive source selection when the requested window exceeds active coverage
-- archive review
-- archived raw entry inspection
-- raw inspection for one domain
-- Python-rendered enriched tables
+`--threshold` controls when compact mode starts.
 
-Not included yet:
+Example:
 
-- exact output parity with `logs-reviewer-ptr.sh`
+```bash
+bash hybrid/logs-reviewer-hybrid.sh --threshold 50
+```
+
+## Output Model
+
+### Normal Mode
+
+If the number of discovered domains is at or below the threshold:
+
+- each domain is printed inline with its full summary
+- an optional domain-level global summary can be shown
+
+### Compact Mode
+
+If the number of discovered domains exceeds the threshold:
+
+- the terminal shows a domain-level summary
+- the full per-domain report is written to `/tmp/logs-reviewer-YYYY-MM-DD-HHMMSS.txt`
+- the terminal tells you how to rerun with a higher threshold
 
 ## Python Compatibility
 
-`log_enrich.py` is intentionally standard-library only.
+`log_enrich.py` is written to work with Python 3.9 through 3.12.
 
-Why:
+It is standard-library first. No extra packages are required.
 
-- easier rollout across servers
-- no required `pip install`
-- better compatibility across Python 3.9 through 3.12
-
-The helper currently uses:
-
-- `argparse`
-- `collections`
-- `json`
-- `re`
-- `socket`
-- `urllib.request`
-
-Optional future pip modules can still be added later, but they are not required for this prototype.
-
-If `tldextract` is installed, `log_enrich.py` will use it automatically for better registrable-domain extraction when grouping PTR hosts and providers.
+If `tldextract` is already installed on the server, the helper will use it automatically for better registrable-domain extraction when grouping PTR hosts.
