@@ -147,7 +147,8 @@ def parse_apache_epoch(time_value):
 
     return int(timestamp.timestamp())
 
-# discover base logs based on caller user and requested user, with fallback to scanning all home directories for root caller if no requested user provided
+# Discover base logs for the caller or requested cPanel user.
+# If root does not specify a user, scan all home directories.
 
 
 def discover_base_logs(caller_user, requested_user):
@@ -652,7 +653,18 @@ def load_domain_metrics(path):
         parts = line.rstrip("\n").split("\t")
         if len(parts) != 10:
             continue
-        domain, requests, unique_ips, bot_requests, bot_pct, top4xx, top5xx, total_errors, error_rate, total_bytes = parts
+        (
+            domain,
+            requests,
+            unique_ips,
+            bot_requests,
+            bot_pct,
+            top4xx,
+            top5xx,
+            total_errors,
+            error_rate,
+            total_bytes,
+        ) = parts
         try:
             rows.append(
                 {
