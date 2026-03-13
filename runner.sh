@@ -748,7 +748,7 @@ main() {
     echo "${YELLOW}Compact mode will be used:${DEF} ${#BASE_LOGS[@]} logs exceeds inline threshold ${MAX_DOMAINS_INLINE}."
     echo "The terminal will show a domain-level summary, and the full per-domain report will be saved to:"
     echo "$report_file"
-    echo "${YELLOW}To increase the inline limit, rerun with the threshold option:${DEF} curl -fsSL ${RED}URL${DEF} | bash -s -- --threshold 50"
+    echo "${YELLOW}To increase the inline limit, rerun with the threshold option:${DEF} curl -fsSL URL | bash -s -- --threshold 50"
     echo
   fi
 
