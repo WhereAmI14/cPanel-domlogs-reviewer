@@ -59,4 +59,4 @@ jobs:
       - name: Run Python CLI smoke checks
         shell: bash
         run: |
-          python hybrid/log_enrich.py --help > /dev/null
+          python log_enrich.py --help > /dev/null
