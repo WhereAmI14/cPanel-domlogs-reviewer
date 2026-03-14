@@ -2,14 +2,14 @@
 
 `cPanel Access Log Reviewer` is a command-line tool for analyzing Apache access logs on cPanel servers. It produces per-domain summaries, highlights suspicious or noisy traffic patterns, and supports both active logs and rotated archive logs.
 
-The main version now lives in the repository root. The recommended entrypoint is the root-level bootstrap script, which stages `runner.sh` and `log_enrich.py` in a temporary directory and executes the tool without leaving an installed copy behind.
+The entrypoint is the root-level bootstrap script `logs-reviewer.sh` which stages `runner.sh` and `log_enrich.py` in a temporary directory and executes the tool without leaving an installed copy behind.
 
 ## Repository Layout
 
 - `logs-reviewer.sh`: bootstrap entrypoint for local and remote execution
 - `runner.sh`: Bash orchestration layer for prompts, source selection, and output flow
 - `log_enrich.py`: Python analysis engine for parsing, summarization, and enrichment
-- `bash-variant/logs-reviewer.sh`: original Bash-only implementation kept as a fallback variant
+- `bash-variant/logs-reviewer.sh`: original Bash-only implementation kept as a fallback variant. **NOTE:** It might lack some of the features of the main version.
 
 ## Features
 
@@ -124,9 +124,7 @@ If `tldextract` is already installed on the server, it will be used automaticall
 
 ## CI Checks
 
-This repository uses GitHub Actions to run quality checks on pushes to `dev` and on pull requests targeting `dev` or `main`.
-
-Current checks include:
+This repository uses GitHub Actions to run quality checks including:
 
 - Python linting with `ruff`
 - shell script linting with `ShellCheck`
@@ -137,7 +135,7 @@ Current checks include:
 
 ## Bash Variant
 
-The original Bash-only implementation is still available in `bash-variant/README.md`. Keep it as a fallback if you need a pure Bash version or want to compare behavior with the main root-level tool.
+The original Bash-only implementation is still available in `bash-variant/README.md`. Keeping it as a fallback if you need a pure Bash version or want to compare behavior with the main root-level tool.
 
 ## Notes
 
