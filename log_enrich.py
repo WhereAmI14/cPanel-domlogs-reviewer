@@ -26,7 +26,7 @@ APACHE_TIME_RE = re.compile(
     r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
     r"(?: (?P<tz>[+-]\d{4}))?$"
 )
-BOT_RE = re.compile(r"bot|crawl|spider", re.I)
+BOT_RE = re.compile(r"bot|crawl|spider", re.I)  # simple bot detection for user agents
 MONTHS = {
     "Jan": 1,
     "Feb": 2,
@@ -50,11 +50,7 @@ ARCHIVE_PLAIN_RE = re.compile(r"^(.+)-[A-Za-z]{3}-\d{4}\.gz$")
 
 
 def use_color():
-    return (
-        os.isatty(1)
-        and not os.environ.get("NO_COLOR")
-        and os.environ.get("TERM") != "dumb"
-    )
+    return os.isatty(1) and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
 
 
 USE_COLOR = use_color()
@@ -147,6 +143,7 @@ def parse_apache_epoch(time_value):
 
     return int(timestamp.timestamp())
 
+
 # Discover base logs for the caller or requested cPanel user.
 # If root does not specify a user, scan all home directories.
 
@@ -160,11 +157,7 @@ def discover_base_logs(caller_user, requested_user):
         if not users:
             try:
                 with os.scandir("/home") as entries:
-                    users = sorted(
-                        entry.name
-                        for entry in entries
-                        if entry.is_dir(follow_symlinks=True)
-                    )
+                    users = sorted(entry.name for entry in entries if entry.is_dir(follow_symlinks=True))
             except OSError:
                 users = []
     else:
@@ -196,6 +189,7 @@ def discover_base_logs(caller_user, requested_user):
 
     for path in sorted(base_logs):
         print(path)
+
 
 # discover archive logs based on provided base logs, and extract available periods and domains from them
 
@@ -258,11 +252,7 @@ def archive_query(archive_logs, date_choice, raw_domain):
         return
 
     available_domains = sorted(
-        {
-            domain
-            for domain in (archive_domain_from_name(os.path.basename(path)) for path in scope_matches)
-            if domain
-        }
+        {domain for domain in (archive_domain_from_name(os.path.basename(path)) for path in scope_matches) if domain}
     )
 
     for domain in available_domains:
@@ -280,8 +270,7 @@ def archive_query(archive_logs, date_choice, raw_domain):
             print(f"TARGET\t{path}")
         return
 
-    base_input = raw_domain[:-
-                            8] if raw_domain.endswith("-ssl_log") else raw_domain
+    base_input = raw_domain[:-8] if raw_domain.endswith("-ssl_log") else raw_domain
     targets = []
     matched_periods = set()
     matched_files = []
@@ -488,20 +477,12 @@ def resolve_org(ip):
         data = http_json(f"https://ipwho.is/{urllib.parse.quote(ip)}")
         if isinstance(data, dict):
             connection = data.get("connection") or {}
-            org = normalize_org(
-                connection.get("org")
-                or connection.get("isp")
-                or data.get("org")
-            )
+            org = normalize_org(connection.get("org") or connection.get("isp") or data.get("org"))
 
     if org in ("", "-", None, "null"):
         data = http_json(f"https://ipapi.co/{urllib.parse.quote(ip)}/json/")
         if isinstance(data, dict):
-            org = normalize_org(
-                data.get("org")
-                or data.get("asn")
-                or data.get("company")
-            )
+            org = normalize_org(data.get("org") or data.get("asn") or data.get("company"))
 
     if org in ("", None, "null"):
         org = "-"
@@ -574,10 +555,7 @@ def print_grouped_ptr(ip_counts, label):
         grouped[key]["ips"].add(ip)
 
     rows = sorted(
-        (
-            (data["requests"], len(data["ips"]), key)
-            for key, data in grouped.items()
-        ),
+        ((data["requests"], len(data["ips"]), key) for key, data in grouped.items()),
         key=lambda item: (-item[0], -item[1], item[2]),
     )[:10]
 
@@ -608,8 +586,7 @@ def print_error_pairs(error_pair_counts):
         print_empty()
         return
 
-    print_bold(
-        f"{'Count':>8}  {'IP':<39} {'PTR Host':<40} {'Org / ISP':<22} Status")
+    print_bold(f"{'Count':>8}  {'IP':<39} {'PTR Host':<40} {'Org / ISP':<22} Status")
     for (ip, status), count in rows:
         host = resolve_ptr(ip)
         org = resolve_org(ip)
@@ -803,16 +780,13 @@ def run_summary(args):
 
     print()
     print(f"{GREEN}Bots{DEF}")
-    bot_pct = (summary["bot_requests"] * 100.0 /
-               total_requests) if total_requests else 0.0
+    bot_pct = (summary["bot_requests"] * 100.0 / total_requests) if total_requests else 0.0
     print(f"Bot requests: {summary['bot_requests']} ({bot_pct:.2f}%)")
-    print_counted_table(
-        summary["bot_counter"].most_common(10), "User Agent", 110)
+    print_counted_table(summary["bot_counter"].most_common(10), "User Agent", 110)
 
     print()
     print(f"{GREEN}Top Referrers{DEF}")
-    print_counted_table(
-        summary["ref_counter"].most_common(10), "Referrer", 110)
+    print_counted_table(summary["ref_counter"].most_common(10), "Referrer", 110)
 
     print()
     print(f"{GREEN}Top 4xx URLs{DEF}")
@@ -906,8 +880,7 @@ def main():
         match_base_archives(iter_input_values(args.input_file), args.base_name)
         return
 
-    archive_query(iter_input_values(args.input_file),
-                  args.date_choice, args.raw_domain)
+    archive_query(iter_input_values(args.input_file), args.date_choice, args.raw_domain)
 
 
 if __name__ == "__main__":
